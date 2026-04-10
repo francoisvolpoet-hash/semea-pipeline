@@ -182,6 +182,8 @@ th.sorted .sort-arrow{opacity:1;color:var(--accent)}
       <input type="file" id="fileImport" accept=".xlsx,.xls" style="display:none" onchange="importExcel(event)">
       <button class="export-btn" onclick="exportCSV()">📥 Export CSV</button>
       <button class="export-btn" onclick="exportUpdates()">📋 Export Updates</button>
+      <button class="export-btn" onclick="setSyncUrl()" style="background:var(--blue)">☁️ Sync</button>
+      <span id="syncStatus" style="font-size:.75rem"></span>
       <button class="export-btn" onclick="exportAllState()" style="background:var(--green)">💾 Backup Data</button>
       <button class="export-btn" onclick="document.getElementById('stateImport').click()" style="background:var(--blue)">📂 Restore Data</button>
       <input type="file" id="stateImport" accept=".json" style="display:none" onchange="importAllState(event)">
@@ -1157,6 +1159,7 @@ function submitReview() {
   });
   saveState(state);
 
+  pushReviews(aeName);
   alert(`✅ Review submitted!\n\n${reviewed}/${deals.length} deals reviewed.\nYour updates are now visible in the main dashboard.`);
 }
 
@@ -1397,6 +1400,152 @@ function importAllState(event) {
   reader.readAsText(file);
 }
 
+// ── Google Sheets Sync ─────────────────────────────────────────────
+const SYNC_URL_KEY = 'semea_sync_url';
+
+function getSyncUrl() {
+  return localStorage.getItem(SYNC_URL_KEY) || '';
+}
+
+function setSyncUrl() {
+  const current = getSyncUrl();
+  const url = prompt(
+    '🔗 Paste your Google Apps Script Web App URL:\n\n' +
+    '(See setup instructions in the dashboard)',
+    current
+  );
+  if (url === null) return;
+  if (url && !url.startsWith('https://script.google.com/')) {
+    alert('❌ Invalid URL. It should start with https://script.google.com/');
+    return;
+  }
+  localStorage.setItem(SYNC_URL_KEY, url);
+  if (url) {
+    alert('✅ Sync configured! Reviews will now sync automatically.');
+    pullReviews();
+  } else {
+    alert('Sync disabled.');
+  }
+  updateSyncStatus();
+}
+
+function updateSyncStatus() {
+  const el = document.getElementById('syncStatus');
+  if (!el) return;
+  const url = getSyncUrl();
+  if (url) {
+    el.innerHTML = '🟢 Sync active';
+    el.style.color = 'var(--green)';
+  } else {
+    el.innerHTML = '⚪ Sync off — <a href="#" onclick="event.preventDefault();setSyncUrl()" style="color:var(--accent)">Configure</a>';
+    el.style.color = 'var(--muted)';
+  }
+}
+
+// Push reviews to Google Sheet
+async function pushReviews(aeName) {
+  const url = getSyncUrl();
+  if (!url) return;
+  
+  const aeRv = aeReviews[aeName] || {};
+  if (Object.keys(aeRv).length === 0) return;
+  
+  const fq = getCurrentFQ();
+  const deals = getReviewDeals(aeName);
+  
+  const reviews = deals
+    .filter(d => aeRv[d.id])
+    .map(d => {
+      const rv = aeRv[d.id];
+      return {
+        ae_name: aeName,
+        deal_id: d.id,
+        account: d.Account_Name,
+        opportunity: d.Opportunity_Name,
+        status: rv.status || '✅ On Track',
+        next_step: rv.next_step || '',
+        blocker: rv.blocker || '',
+        timestamp: rv.timestamp || new Date().toISOString(),
+        quarter: fq,
+      };
+    });
+  
+  if (reviews.length === 0) return;
+  
+  try {
+    document.getElementById('rvAutoSave').textContent = '☁️ Syncing...';
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'text/plain'},
+      body: JSON.stringify({ reviews }),
+    });
+    const result = await resp.json();
+    if (result.success) {
+      document.getElementById('rvAutoSave').textContent = `☁️ Synced! (${result.added} new, ${result.updated} updated)`;
+      setTimeout(() => {
+        document.getElementById('rvAutoSave').textContent = '✅ All changes auto-saved & synced';
+      }, 3000);
+    } else {
+      document.getElementById('rvAutoSave').textContent = '⚠️ Sync error: ' + (result.error || 'unknown');
+    }
+  } catch (err) {
+    console.error('Sync push error:', err);
+    document.getElementById('rvAutoSave').textContent = '⚠️ Sync failed — saved locally';
+  }
+}
+
+// Pull all reviews from Google Sheet  
+async function pullReviews() {
+  const url = getSyncUrl();
+  if (!url) return;
+  
+  try {
+    const resp = await fetch(url);
+    const data = await resp.json();
+    
+    if (!data.reviews || data.reviews.length === 0) return;
+    
+    // Merge into local aeReviews
+    let imported = 0;
+    data.reviews.forEach(rv => {
+      const ae = rv.ae_name;
+      if (!ae) return;
+      if (!aeReviews[ae]) aeReviews[ae] = {};
+      
+      // Only update if remote is newer
+      const existing = aeReviews[ae][rv.deal_id];
+      if (!existing || (rv.timestamp && (!existing.timestamp || rv.timestamp > existing.timestamp))) {
+        aeReviews[ae][rv.deal_id] = {
+          status: rv.status || '✅ On Track',
+          next_step: rv.next_step || '',
+          blocker: rv.blocker || '',
+          timestamp: rv.timestamp || '',
+        };
+        imported++;
+      }
+    });
+    
+    if (imported > 0) {
+      saveReviews(aeReviews);
+      // Also merge into main state for dashboard visibility
+      data.reviews.forEach(rv => {
+        if (!rv.deal_id || !rv.ae_name) return;
+        if (!state[rv.deal_id]) state[rv.deal_id] = { updates: [] };
+        if (rv.status.includes('On Track')) state[rv.deal_id].gutt = 'green';
+        else if (rv.status.includes('At Risk')) state[rv.deal_id].gutt = 'yellow';
+        else state[rv.deal_id].gutt = 'red';
+      });
+      saveState(state);
+      console.log(`☁️ Pulled ${imported} reviews from sync`);
+    }
+    
+    return imported;
+  } catch (err) {
+    console.error('Sync pull error:', err);
+    return 0;
+  }
+}
+
 // ── AE-only mode via URL parameter ──────────────────────────────
 // Usage: pipeline_dashboard.html?ae=Fabrice+Mendes
 // AE sees only their review tab, no access to RVP views
@@ -1432,7 +1581,10 @@ if (aeParam) {
     document.getElementById('dataDate').textContent = savedDataDate + ' \u2022 SEMEA-MED';
   }
   render();
+  // Auto-pull reviews from sync
+  pullReviews().then(n => { if (n > 0) render(); });
 }
+updateSyncStatus();
 </script>
 </body>
 </html>

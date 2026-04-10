@@ -182,6 +182,9 @@ th.sorted .sort-arrow{opacity:1;color:var(--accent)}
       <input type="file" id="fileImport" accept=".xlsx,.xls" style="display:none" onchange="importExcel(event)">
       <button class="export-btn" onclick="exportCSV()">📥 Export CSV</button>
       <button class="export-btn" onclick="exportUpdates()">📋 Export Updates</button>
+      <button class="export-btn" onclick="exportAllState()" style="background:var(--green)">💾 Backup Data</button>
+      <button class="export-btn" onclick="document.getElementById('stateImport').click()" style="background:var(--blue)">📂 Restore Data</button>
+      <input type="file" id="stateImport" accept=".json" style="display:none" onchange="importAllState(event)">
     </div>
   </div>
   <div class="view-tabs">
@@ -1303,6 +1306,96 @@ function renderReviewSummary() {
   const el=document.getElementById(id);
   el.addEventListener(el.tagName==='INPUT'?'input':'change',render);
 });
+
+// ── Backup / Restore all data (for migration between local and GitHub Pages) ──
+function exportAllState() {
+  const backup = {
+    version: 1,
+    exported: new Date().toISOString(),
+    pipeline_updates: loadState(),
+    closed_won: loadClosedWon(),
+    ae_reviews: loadReviews(),
+    data_date: localStorage.getItem('semea_data_date') || '',
+  };
+  const count = Object.keys(backup.pipeline_updates).length;
+  const reviewCount = Object.values(backup.ae_reviews).reduce((s, ae) => s + Object.keys(ae).length, 0);
+  const blob = new Blob([JSON.stringify(backup, null, 2)], {type: 'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'pipeline_backup_' + new Date().toISOString().slice(0,10) + '.json';
+  a.click();
+  alert(`✅ Backup exported!\n\n${count} deal updates\n${reviewCount} AE reviews\nClosed Won: $${Math.round(backup.closed_won).toLocaleString()}`);
+}
+
+function importAllState(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const backup = JSON.parse(e.target.result);
+      let restored = [];
+      
+      if (backup.pipeline_updates && Object.keys(backup.pipeline_updates).length > 0) {
+        // Merge with existing state (don't overwrite, merge)
+        const existing = loadState();
+        Object.entries(backup.pipeline_updates).forEach(([id, data]) => {
+          if (!existing[id]) {
+            existing[id] = data;
+          } else {
+            // Merge updates arrays
+            const existingUpdates = existing[id].updates || [];
+            const newUpdates = data.updates || [];
+            const existingDates = new Set(existingUpdates.map(u => u.date + u.text));
+            newUpdates.forEach(u => {
+              if (!existingDates.has(u.date + u.text)) existingUpdates.push(u);
+            });
+            existing[id].updates = existingUpdates;
+            if (data.gutt) existing[id].gutt = data.gutt;
+            if (data.stage) existing[id].stage = data.stage;
+            if (data.forecast) existing[id].forecast = data.forecast;
+            if (data.close_date) existing[id].close_date = data.close_date;
+          }
+        });
+        state = existing;
+        saveState(state);
+        restored.push(Object.keys(backup.pipeline_updates).length + ' deal updates');
+      }
+      
+      if (backup.closed_won) {
+        closedWonAmount = backup.closed_won;
+        saveClosedWon(closedWonAmount);
+        restored.push('Closed Won: $' + Math.round(closedWonAmount).toLocaleString());
+      }
+      
+      if (backup.ae_reviews && Object.keys(backup.ae_reviews).length > 0) {
+        const existing = loadReviews();
+        Object.entries(backup.ae_reviews).forEach(([ae, reviews]) => {
+          if (!existing[ae]) existing[ae] = {};
+          Object.assign(existing[ae], reviews);
+        });
+        aeReviews = existing;
+        saveReviews(aeReviews);
+        const rc = Object.values(backup.ae_reviews).reduce((s, ae) => s + Object.keys(ae).length, 0);
+        restored.push(rc + ' AE reviews');
+      }
+      
+      if (backup.data_date) {
+        localStorage.setItem('semea_data_date', backup.data_date);
+        document.getElementById('dataDate').textContent = backup.data_date + ' \u2022 SEMEA-MED';
+        restored.push('Data date');
+      }
+      
+      render();
+      alert('\u2705 Data restored!\n\n' + restored.join('\n'));
+    } catch(err) {
+      alert('Error importing backup: ' + err.message);
+      console.error(err);
+    }
+    event.target.value = '';
+  };
+  reader.readAsText(file);
+}
 
 // ── AE-only mode via URL parameter ──────────────────────────────
 // Usage: pipeline_dashboard.html?ae=Fabrice+Mendes

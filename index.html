@@ -193,8 +193,6 @@ th.sorted .sort-arrow{opacity:1;color:var(--accent)}
       <input type="file" id="fileImport" accept=".xlsx,.xls" style="display:none" onchange="importExcel(event)">
       <button class="export-btn" onclick="exportCSV()">📥 Export CSV</button>
       <button class="export-btn" onclick="exportUpdates()">📋 Export Updates</button>
-      <button class="export-btn" onclick="setSyncUrl()" style="background:var(--blue)">☁️ Sync</button>
-      <span id="syncStatus" style="font-size:.75rem"></span>
       <button class="export-btn" onclick="exportAllState()" style="background:var(--green)">💾 Backup Data</button>
       <button class="export-btn" onclick="document.getElementById('stateImport').click()" style="background:var(--blue)">📂 Restore Data</button>
       <input type="file" id="stateImport" accept=".json" style="display:none" onchange="importAllState(event)">
@@ -291,7 +289,7 @@ th.sorted .sort-arrow{opacity:1;color:var(--accent)}
         <button onclick="unlockAE()" style="background:transparent;color:var(--muted);border:1px solid var(--border);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:.75rem" title="Switch to full dashboard">🔓 Unlock</button>
       <div style="display:flex;gap:8px">
         <button class="btn-export" onclick="exportReviewJSON()">📤 Export Review</button>
-        <button class="btn-submit" onclick="submitReview()">✅ Submit Review</button>
+        <button class="btn-submit" onclick="submitReview()">✅ Submit & Share</button>
       </div>
     </div>
   </div>
@@ -1212,8 +1210,7 @@ function submitReview() {
   });
   saveState(state);
 
-  pushReviews(aeName);
-  alert(`✅ Review submitted!\n\n${reviewed}/${deals.length} deals reviewed.\nYour updates are now visible in the main dashboard.`);
+  generateShareLink(aeName);
 }
 
 function exportReviewJSON() {
@@ -1479,7 +1476,7 @@ function setSyncUrl() {
   } else {
     alert('Sync disabled.');
   }
-  updateSyncStatus();
+  // sync removed
 }
 
 function updateSyncStatus() {
@@ -1495,117 +1492,149 @@ function updateSyncStatus() {
   }
 }
 
-// Push reviews to Google Sheet (CORS-compatible via JSONP callback for POST)
-async function pushReviews(aeName) {
-  const url = getSyncUrl();
-  if (!url) return;
-  
+// ── Share reviews via link ─────────────────────────────────────────
+// AE generates a link with review data → sends to RVP → RVP clicks to import.
+// No server needed, no CORS, works 100%.
+
+function generateShareLink(aeName) {
   const aeRv = aeReviews[aeName] || {};
-  if (Object.keys(aeRv).length === 0) return;
+  if (Object.keys(aeRv).length === 0) {
+    alert('No reviews to share yet. Fill in your deals first!');
+    return;
+  }
   
   const fq = getCurrentFQ();
   const deals = getReviewDeals(aeName);
   
+  // Build compact review data
   const reviews = deals
     .filter(d => aeRv[d.id])
     .map(d => {
       const rv = aeRv[d.id];
       return {
-        ae_name: aeName,
-        deal_id: d.id,
-        account: d.Account_Name,
-        opportunity: d.Opportunity_Name,
-        status: rv.status || '✅ On Track',
-        next_step: rv.next_step || '',
-        blocker: rv.blocker || '',
-        revised_acv: rv.revised_acv || '',
-        revised_close: rv.revised_close || '',
-        lost_reason: rv.lost_reason || '',
-        timestamp: rv.timestamp || new Date().toISOString(),
-        quarter: fq,
+        a: aeName,
+        id: d.id,
+        acc: d.Account_Name,
+        opp: d.Opportunity_Name,
+        s: rv.status || '',
+        ns: rv.next_step || '',
+        b: rv.blocker || '',
+        ra: rv.revised_acv || '',
+        rc: rv.revised_close || '',
+        lr: rv.lost_reason || '',
+        t: rv.timestamp || '',
+        q: fq,
       };
     });
   
-  if (reviews.length === 0) return;
+  // Compress: base64 encode the JSON
+  const jsonStr = JSON.stringify(reviews);
+  const encoded = btoa(unescape(encodeURIComponent(jsonStr)));
   
-  try {
-    document.getElementById('rvAutoSave').textContent = '☁️ Syncing...';
-    // Use GET with data as URL param to avoid CORS issues with POST
-    const payload = encodeURIComponent(JSON.stringify({ reviews }));
-    const sep = url.includes('?') ? '&' : '?';
-    const pushUrl = url + sep + 'action=push&data=' + payload;
-    
-    const resp = await fetch(pushUrl, { redirect: 'follow' });
-    const result = await resp.json();
-    if (result.success) {
-      document.getElementById('rvAutoSave').textContent = `☁️ Synced! (${result.added || 0} new, ${result.updated || 0} updated)`;
-      setTimeout(() => {
-        document.getElementById('rvAutoSave').textContent = '✅ All changes auto-saved & synced';
-      }, 3000);
-    } else {
-      document.getElementById('rvAutoSave').textContent = '⚠️ Sync error: ' + (result.error || 'unknown');
-    }
-  } catch (err) {
-    console.error('Sync push error:', err);
-    document.getElementById('rvAutoSave').textContent = '⚠️ Sync failed — saved locally';
-  }
+  // Build the link (use current page URL without existing hash/params)
+  const baseUrl = window.location.origin + window.location.pathname;
+  const shareLink = baseUrl + '?import=' + encodeURIComponent(encoded);
+  
+  // Copy to clipboard
+  navigator.clipboard.writeText(shareLink).then(() => {
+    alert('✅ Review link copied to clipboard!\n\n' +
+          reviews.length + ' deals from ' + aeName + '\n\n' +
+          'Send this link to your manager via Slack or email.\n' +
+          'When they click it, your reviews will be imported automatically.');
+  }).catch(() => {
+    // Fallback: show the link in a prompt
+    prompt('Copy this link and send it to your manager:', shareLink);
+  });
 }
 
-// Pull all reviews from Google Sheet  
-async function pullReviews() {
-  const url = getSyncUrl();
-  if (!url) return;
+// Auto-import reviews from URL on page load
+function importFromUrl() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const importData = urlParams.get('import');
+  if (!importData) return false;
   
   try {
-    const sep = url.includes('?') ? '&' : '?';
-    const resp = await fetch(url + sep + 'action=pull', { redirect: 'follow' });
-    const data = await resp.json();
+    const jsonStr = decodeURIComponent(escape(atob(decodeURIComponent(importData))));
+    const reviews = JSON.parse(jsonStr);
     
-    if (!data.reviews || data.reviews.length === 0) return 0;
+    if (!reviews || reviews.length === 0) return false;
     
-    // Merge into local aeReviews
+    const aeName = reviews[0].a;
     let imported = 0;
-    data.reviews.forEach(rv => {
-      const ae = rv.ae_name;
+    
+    reviews.forEach(rv => {
+      const ae = rv.a;
       if (!ae) return;
       if (!aeReviews[ae]) aeReviews[ae] = {};
       
-      // Only update if remote is newer
-      const existing = aeReviews[ae][rv.deal_id];
-      if (!existing || (rv.timestamp && (!existing.timestamp || rv.timestamp > existing.timestamp))) {
-        aeReviews[ae][rv.deal_id] = {
-          status: rv.status || '✅ On Track',
-          next_step: rv.next_step || '',
-          blocker: rv.blocker || '',
-          revised_acv: rv.revised_acv || '',
-          revised_close: rv.revised_close || '',
-          lost_reason: rv.lost_reason || '',
-          timestamp: rv.timestamp || '',
-        };
-        imported++;
+      aeReviews[ae][rv.id] = {
+        status: rv.s || '✅ On Track',
+        next_step: rv.ns || '',
+        blocker: rv.b || '',
+        revised_acv: rv.ra || '',
+        revised_close: rv.rc || '',
+        lost_reason: rv.lr || '',
+        timestamp: rv.t || '',
+      };
+      imported++;
+      
+      // Also merge into main state
+      if (!state[rv.id]) state[rv.id] = { updates: [] };
+      if (rv.s && rv.s.includes('On Track')) state[rv.id].gutt = 'green';
+      else if (rv.s && rv.s.includes('At Risk')) state[rv.id].gutt = 'yellow';
+      else state[rv.id].gutt = 'red';
+      
+      // Add update entry
+      const noteLines = [];
+      if (rv.s && rv.s !== '✅ On Track') noteLines.push('Status: ' + rv.s);
+      if (rv.ns) noteLines.push('Next: ' + rv.ns);
+      if (rv.b) noteLines.push('Blocker: ' + rv.b);
+      if (rv.ra) noteLines.push('Revised ACV: $' + rv.ra);
+      if (rv.rc) noteLines.push('New close: ' + rv.rc);
+      if (rv.lr) noteLines.push('Lost reason: ' + rv.lr);
+      if (noteLines.length > 0) {
+        // Avoid duplicate entries
+        const noteText = '[AE Review - ' + ae + ']\n' + noteLines.join('\n');
+        const isDuplicate = (state[rv.id].updates || []).some(u => u.text === noteText);
+        if (!isDuplicate) {
+          state[rv.id].updates = state[rv.id].updates || [];
+          state[rv.id].updates.push({
+            date: new Date().toLocaleDateString('en-US') + ' ' + new Date().toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit'}),
+            text: noteText,
+          });
+        }
       }
     });
     
-    if (imported > 0) {
-      saveReviews(aeReviews);
-      // Also merge into main state for dashboard visibility
-      data.reviews.forEach(rv => {
-        if (!rv.deal_id || !rv.ae_name) return;
-        if (!state[rv.deal_id]) state[rv.deal_id] = { updates: [] };
-        if (rv.status && rv.status.includes('On Track')) state[rv.deal_id].gutt = 'green';
-        else if (rv.status && rv.status.includes('At Risk')) state[rv.deal_id].gutt = 'yellow';
-        else state[rv.deal_id].gutt = 'red';
-      });
-      saveState(state);
-      console.log('☁️ Pulled ' + imported + ' reviews from sync');
-    }
+    saveReviews(aeReviews);
+    saveState(state);
     
-    return imported;
+    // Clean the URL (remove import param)
+    const cleanUrl = window.location.origin + window.location.pathname;
+    window.history.replaceState({}, '', cleanUrl);
+    
+    // Show success banner
+    setTimeout(() => {
+      const banner = document.createElement('div');
+      banner.className = 'import-banner';
+      banner.innerHTML = `<div><div class="msg">✅ Imported ${imported} reviews from ${aeName}</div><div class="details">Reviews are now visible in AE Status column and Reviews Summary</div></div><button onclick="this.parentElement.remove()">✕</button>`;
+      document.querySelector('.kpi-row').before(banner);
+    }, 100);
+    
+    return true;
   } catch (err) {
-    console.error('Sync pull error:', err);
-    return 0;
+    console.error('Import from URL failed:', err);
+    return false;
   }
 }
+
+// Keep pushReviews as alias for backward compat (now generates link)
+async function pushReviews(aeName) {
+  generateShareLink(aeName);
+}
+
+// pullReviews is now a no-op (import happens via URL)
+async function pullReviews() { return 0; }
 
 // ── AE-only mode via URL parameter ──────────────────────────────
 // Usage: pipeline_dashboard.html?ae=Fabrice+Mendes
@@ -1631,6 +1660,9 @@ function enterAEMode(aeName) {
 // Check for AE mode: URL param or sessionStorage
 const sessionAE = sessionStorage.getItem('semea_ae_identity');
 
+// Check for incoming review import link
+const didImport = importFromUrl();
+
 if (aeParam) {
   enterAEMode(aeParam);
 } else if (sessionAE) {
@@ -1643,9 +1675,9 @@ if (aeParam) {
   }
   render();
   // Auto-pull reviews from sync
-  pullReviews().then(n => { if (n > 0) render(); });
+  // reviews loaded from URL import
 }
-updateSyncStatus();
+// sync removed
 </script>
 </body>
 </html>

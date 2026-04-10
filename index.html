@@ -168,6 +168,17 @@ th.sorted .sort-arrow{opacity:1;color:var(--accent)}
 .import-reviews-btn{background:var(--surface);color:var(--blue);border:1px solid var(--blue);padding:8px 16px;border-radius:8px;cursor:pointer;font-size:.85rem;font-weight:600}
 @media(max-width:700px){.card-inputs{grid-template-columns:1fr}.review-header .review-meta{flex-direction:column;gap:12px}}
 
+
+/* Conditional fields in AE cards */
+.card-extra{padding:0 18px 12px;display:none;animation:fadeIn .3s}
+.card-extra.visible{display:block}
+.card-extra label{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px;display:block}
+.card-extra input{width:100%;max-width:250px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:.85rem;transition:border-color .2s}
+.card-extra input:focus{border-color:var(--accent);outline:none}
+.card-extra .extra-hint{font-size:.72rem;color:var(--muted);margin-top:4px}
+.card-extra-upside input{border-color:var(--green)}
+.card-extra-slip input{border-color:var(--orange)}
+
 </style>
 </head>
 <body>
@@ -383,6 +394,29 @@ const colRisk  = ['Risk_Severity',  'Risk',           d => riskBadge(d.Risk_Seve
     return `<span style="font-size:1.1rem">${emoji}</span>`;
   }];
 
+  // AE Review Status column
+  const colAEStatus = ['_ae_status', 'AE Status', d => {
+    // Look up the latest AE review for this deal
+    const allRv = typeof aeReviews !== 'undefined' ? aeReviews : {};
+    for (const ae of Object.keys(allRv)) {
+      const rv = allRv[ae][d.id];
+      if (rv && rv.status) {
+        const s = rv.status;
+        let bg = 'rgba(34,197,94,.12)', color = 'var(--green)', label = 'On Track';
+        if (s.includes('At Risk')) { bg = 'rgba(249,115,22,.12)'; color = 'var(--orange)'; label = 'At Risk'; }
+        else if (s.includes('Slipping')) { bg = 'rgba(239,68,68,.12)'; color = 'var(--red)'; label = 'Slipping'; }
+        else if (s.includes('Upside')) { bg = 'rgba(99,102,241,.12)'; color = 'var(--accent)'; label = 'Upside'; }
+        else if (s.includes('Lost')) { bg = 'rgba(239,68,68,.15)'; color = 'var(--red)'; label = 'Lost'; }
+        let extra = '';
+        if (rv.revised_acv) extra += '<br><span style="font-size:.7rem;color:var(--green)">↗ $' + parseInt(rv.revised_acv).toLocaleString() + '</span>';
+        if (rv.revised_close) extra += '<br><span style="font-size:.7rem;color:var(--orange)">📅 ' + rv.revised_close + '</span>';
+        if (rv.blocker) extra += '<br><span style="font-size:.7rem;color:var(--muted)" title="' + rv.blocker.replace(/"/g,'&quot;') + '">⚠ ' + (rv.blocker.length > 25 ? rv.blocker.slice(0,25) + '…' : rv.blocker) + '</span>';
+        return '<span class="badge" style="background:' + bg + ';color:' + color + '">' + s.split(' ').slice(0,2).join(' ') + '</span>' + extra;
+      }
+    }
+    return '<span style="color:var(--muted);font-size:.75rem">—</span>';
+  }];
+
   // Amount columns
   const colNACV = ['NACV_converted', 'NACV ($)', d => {
     const pct = (d.NACV_converted||0)/maxNACV*100;
@@ -410,11 +444,11 @@ const colRisk  = ['Risk_Severity',  'Risk',           d => riskBadge(d.Risk_Seve
   switch(v) {
     case 'all':
     case 'newbiz':
-      return [colQtr, colAcct, colOpp, colSFDCMod, colOwner, colNACV, colStage, colFC, colClose, colRisk, colGutt, colUpd];
+      return [colQtr, colAcct, colOpp, colSFDCMod, colOwner, colNACV, colStage, colFC, colClose, colRisk, colAEStatus, colGutt, colUpd];
     case 'renewals':
-      return [colQtr, colAcct, colOpp, colSFDCMod, colOwner, colRenACV, colBaseline, colStage, colFC, colClose, colRisk, colGutt, colUpd];
+      return [colQtr, colAcct, colOpp, colSFDCMod, colOwner, colRenACV, colBaseline, colStage, colFC, colClose, colRisk, colAEStatus, colGutt, colUpd];
     case 'financial':
-      return [colQtr, colAcct, colOpp, colSFDCMod, colOwner, colNewACV, colRenACV, colSvc, colAmount, colStage, colFC, colClose, colGutt, colUpd];
+      return [colQtr, colAcct, colOpp, colSFDCMod, colOwner, colNewACV, colRenACV, colSvc, colAmount, colStage, colFC, colClose, colAEStatus, colGutt, colUpd];
   }
 }
 
@@ -1080,6 +1114,18 @@ function renderReviewCards() {
   }).join('');
 }
 
+function onStatusChange(idx, aeName, dealId) {
+  const status = document.getElementById('rv-status-' + idx).value;
+  // Show/hide conditional fields
+  const upside = document.getElementById('rv-extra-upside-' + idx);
+  const slip = document.getElementById('rv-extra-slip-' + idx);
+  const lost = document.getElementById('rv-extra-lost-' + idx);
+  if (upside) upside.style.display = status.includes('Upside') ? 'block' : 'none';
+  if (slip) slip.style.display = status.includes('Slipping') ? 'block' : 'none';
+  if (lost) lost.style.display = status.includes('Lost') ? 'block' : 'none';
+  autoSaveReview(aeName, dealId, idx);
+}
+
 let saveTimeout = {};
 function autoSaveReview(aeName, dealId, idx) {
   clearTimeout(saveTimeout[idx]);
@@ -1088,11 +1134,18 @@ function autoSaveReview(aeName, dealId, idx) {
     const nextStep = document.getElementById('rv-next-' + idx).value.trim();
     const blocker = document.getElementById('rv-blocker-' + idx).value.trim();
 
+    const revisedAcv = (document.getElementById('rv-newacv-' + idx) || {}).value || '';
+    const revisedClose = (document.getElementById('rv-newdate-' + idx) || {}).value || '';
+    const lostReason = (document.getElementById('rv-lostreason-' + idx) || {}).value || '';
+
     if (!aeReviews[aeName]) aeReviews[aeName] = {};
     aeReviews[aeName][dealId] = {
       status,
       next_step: nextStep,
       blocker,
+      revised_acv: revisedAcv.trim(),
+      revised_close: revisedClose.trim(),
+      lost_reason: lostReason.trim(),
       timestamp: new Date().toISOString(),
     };
     saveReviews(aeReviews);
@@ -1465,6 +1518,9 @@ async function pushReviews(aeName) {
         status: rv.status || '✅ On Track',
         next_step: rv.next_step || '',
         blocker: rv.blocker || '',
+        revised_acv: rv.revised_acv || '',
+        revised_close: rv.revised_close || '',
+        lost_reason: rv.lost_reason || '',
         timestamp: rv.timestamp || new Date().toISOString(),
         quarter: fq,
       };

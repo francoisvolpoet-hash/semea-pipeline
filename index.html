@@ -1495,7 +1495,7 @@ function updateSyncStatus() {
   }
 }
 
-// Push reviews to Google Sheet
+// Push reviews to Google Sheet (CORS-compatible via JSONP callback for POST)
 async function pushReviews(aeName) {
   const url = getSyncUrl();
   if (!url) return;
@@ -1530,14 +1530,15 @@ async function pushReviews(aeName) {
   
   try {
     document.getElementById('rvAutoSave').textContent = '☁️ Syncing...';
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: {'Content-Type': 'text/plain'},
-      body: JSON.stringify({ reviews }),
-    });
+    // Use GET with data as URL param to avoid CORS issues with POST
+    const payload = encodeURIComponent(JSON.stringify({ reviews }));
+    const sep = url.includes('?') ? '&' : '?';
+    const pushUrl = url + sep + 'action=push&data=' + payload;
+    
+    const resp = await fetch(pushUrl, { redirect: 'follow' });
     const result = await resp.json();
     if (result.success) {
-      document.getElementById('rvAutoSave').textContent = `☁️ Synced! (${result.added} new, ${result.updated} updated)`;
+      document.getElementById('rvAutoSave').textContent = `☁️ Synced! (${result.added || 0} new, ${result.updated || 0} updated)`;
       setTimeout(() => {
         document.getElementById('rvAutoSave').textContent = '✅ All changes auto-saved & synced';
       }, 3000);
@@ -1556,10 +1557,11 @@ async function pullReviews() {
   if (!url) return;
   
   try {
-    const resp = await fetch(url);
+    const sep = url.includes('?') ? '&' : '?';
+    const resp = await fetch(url + sep + 'action=pull', { redirect: 'follow' });
     const data = await resp.json();
     
-    if (!data.reviews || data.reviews.length === 0) return;
+    if (!data.reviews || data.reviews.length === 0) return 0;
     
     // Merge into local aeReviews
     let imported = 0;
@@ -1575,6 +1577,9 @@ async function pullReviews() {
           status: rv.status || '✅ On Track',
           next_step: rv.next_step || '',
           blocker: rv.blocker || '',
+          revised_acv: rv.revised_acv || '',
+          revised_close: rv.revised_close || '',
+          lost_reason: rv.lost_reason || '',
           timestamp: rv.timestamp || '',
         };
         imported++;
@@ -1587,12 +1592,12 @@ async function pullReviews() {
       data.reviews.forEach(rv => {
         if (!rv.deal_id || !rv.ae_name) return;
         if (!state[rv.deal_id]) state[rv.deal_id] = { updates: [] };
-        if (rv.status.includes('On Track')) state[rv.deal_id].gutt = 'green';
-        else if (rv.status.includes('At Risk')) state[rv.deal_id].gutt = 'yellow';
+        if (rv.status && rv.status.includes('On Track')) state[rv.deal_id].gutt = 'green';
+        else if (rv.status && rv.status.includes('At Risk')) state[rv.deal_id].gutt = 'yellow';
         else state[rv.deal_id].gutt = 'red';
       });
       saveState(state);
-      console.log(`☁️ Pulled ${imported} reviews from sync`);
+      console.log('☁️ Pulled ' + imported + ' reviews from sync');
     }
     
     return imported;

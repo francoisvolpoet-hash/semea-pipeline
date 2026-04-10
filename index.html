@@ -383,7 +383,7 @@ function getColumns() {
   const colFC    = ['Forecast_Category','Forecast',     d => forecastBadge(d.Forecast_Category)];
   const colClose = ['Close_Date',     'Close Date',     d => d.Close_Date];
 const colRisk  = ['Risk_Severity',  'Risk',           d => riskBadge(d.Risk_Severity)];
-  const colSFDCMod = ['Last_Modified_Date', 'SFDC last Modification', d => d.Last_Modified_Date || '<span style="color:var(--muted)">—</span>'];
+  const colSFDCMod = ['Next_Step_Last_Modified', 'SFDC Last Modified', d => d.Next_Step_Last_Modified || '<span style="color:var(--muted)">—</span>'];
   const colUpd   = ['_update',        'Update',         d => {
     const hasU = d._hasUpdate?'🟢':'';
     return `${hasU} ${d._updates.length ? d._updates.length+'✏️':''}`;

@@ -1653,17 +1653,31 @@ const aeParam = urlParams.get('ae');
 
 function enterAEMode(aeName) {
   // Lock into AE-only mode
+  // 1. Hide RVP UI elements
   document.querySelectorAll('.vtab').forEach(b => b.style.display = 'none');
   document.querySelectorAll('.export-btn').forEach(b => b.style.display = 'none');
+  document.querySelectorAll('.import-reviews-btn').forEach(b => b.style.display = 'none');
   document.querySelector('.header h1').textContent = '\u{1F3AF} SEMEA Pipeline Review';
-  setView('review');
+  
+  // 2. Show review container, hide main sections
+  const mainSections = ['.kpi-row','.charts-row','.filters','.table-meta','.table-wrap','#extraKpis'];
+  mainSections.forEach(sel => {
+    document.querySelectorAll(sel).forEach(el => el.style.display = 'none');
+  });
+  document.getElementById('reviewContainer').classList.add('active');
+  document.getElementById('summaryContainer').classList.remove('active');
+  currentView = 'review';
+  
+  // 3. Populate AE selector FIRST, then set value, then render
+  populateAESelector();
   const aeSelect = document.getElementById('aeSelect');
   aeSelect.value = aeName;
   aeSelect.disabled = true;
   aeSelect.style.opacity = '1';
   aeSelect.style.fontWeight = '700';
+  
+  // 4. NOW render cards (aeSelect.value is already set)
   renderReviewCards();
-  document.querySelectorAll('.import-reviews-btn').forEach(b => b.style.display = 'none');
 }
 
 // Check for AE mode: URL param or sessionStorage

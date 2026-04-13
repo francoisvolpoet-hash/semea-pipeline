@@ -7,6 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>SEMEA Pipeline Dashboard – FY2027</title>
+<script>(function(){var p=new URLSearchParams(window.location.search);if(p.get("ae")||sessionStorage.getItem("semea_ae_identity")){document.documentElement.classList.add("ae-mode")}})()</script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
@@ -181,6 +182,20 @@ th.sorted .sort-arrow{opacity:1;color:var(--accent)}
 .card-extra .extra-hint{font-size:.72rem;color:var(--muted);margin-top:4px}
 .card-extra-upside input{border-color:var(--green)}
 .card-extra-slip input{border-color:var(--orange)}
+
+/* ── AE-mode: instant hide of RVP elements (set by early <script> in <head>) ── */
+/* This prevents the flash of full dashboard while main JS loads */
+html.ae-mode .view-tabs,
+html.ae-mode .kpi-row,
+html.ae-mode .charts-row,
+html.ae-mode .filters,
+html.ae-mode .table-meta,
+html.ae-mode .table-wrap,
+html.ae-mode .summary-container,
+html.ae-mode .export-btn,
+html.ae-mode .import-reviews-btn { display: none !important }
+html.ae-mode .review-container { display: block !important }
+
 </style>
 </head>
 <body>

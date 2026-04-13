@@ -1,84 +1,57 @@
 <!DOCTYPE html>
 <html>
-<head><title>Sync Debug</title></head>
+<head><title>Sync Debug v2</title></head>
 <body style="font-family:monospace;padding:20px;background:#111;color:#eee">
-<h2>🔧 Sync Debug Tool</h2>
+<h2>🔧 Sync Debug v2</h2>
 <div id="log" style="white-space:pre-wrap;line-height:1.8"></div>
+<hr style="margin:20px 0;border-color:#333">
+<h3>iframe 1 (GET pull):</h3>
+<iframe id="if1" style="width:100%;height:150px;border:1px solid #444;background:#fff"></iframe>
+<h3>iframe 2 (direct URL - no params):</h3>
+<iframe id="if2" style="width:100%;height:150px;border:1px solid #444;background:#fff"></iframe>
 
 <script>
 var SYNC_URL = 'https://script.google.com/a/macros/chainalysis.com/s/AKfycbyD97uyY-tE_TTikXNp7XvPy16MnB1AZGvgA2Vk7ZCBOTy_-rNsCtgQT9xFq2MIcWEtzA/exec';
 
 function log(msg) {
   document.getElementById('log').textContent += new Date().toLocaleTimeString() + ' | ' + msg + '\n';
-  console.log(msg);
 }
 
-// Listen for postMessage from iframes
 window.addEventListener('message', function(event) {
-  log('📩 postMessage received: ' + JSON.stringify(event.data).substring(0, 200));
+  log('📩 MESSAGE: ' + JSON.stringify(event.data).substring(0, 300));
 });
 
-// TEST 1: Simple GET pull via iframe
-log('=== TEST 1: GET iframe (pull) ===');
-var iframe1 = document.createElement('iframe');
-iframe1.style.cssText = 'width:400px;height:100px;border:1px solid #444';
-iframe1.src = SYNC_URL + '?action=pull&origin=' + encodeURIComponent(window.location.origin);
-document.body.appendChild(iframe1);
-log('Iframe created, waiting for response...');
+// Test 1: iframe with params
+log('TEST 1: Loading iframe with pull params...');
+document.getElementById('if1').src = SYNC_URL + '?action=pull&origin=' + encodeURIComponent(window.location.origin);
 
-// TEST 2: Form POST via iframe (push) — after 5s
+// Test 2: iframe with NO params (simplest possible)
+log('TEST 2: Loading iframe with bare URL...');
+document.getElementById('if2').src = SYNC_URL;
+
+// Test 3: Try window.open as popup
 setTimeout(function() {
-  log('\n=== TEST 2: POST form (push) ===');
-  
-  var testData = {
-    reviews: [{
-      ae_name: 'Debug Test',
-      deal_id: 'debug_test_1',
-      account: 'Debug Account',
-      opportunity: 'Debug Opp',
-      status: '✅ On Track',
-      next_step: 'Debug test',
-      blocker: '',
-      revised_acv: '',
-      revised_close: '',
-      lost_reason: '',
-      timestamp: new Date().toISOString(),
-      quarter: 'Q1-2027'
-    }]
-  };
+  log('\nTEST 3: Opening Apps Script URL directly...');
+  log('Click this link to test in a new tab:');
+  var a = document.createElement('a');
+  a.href = SYNC_URL + '?action=pull&origin=test';
+  a.target = '_blank';
+  a.textContent = '🔗 Open Apps Script URL in new tab';
+  a.style.cssText = 'color:#6366f1;font-size:16px;display:block;margin:10px 0';
+  document.getElementById('log').appendChild(a);
+}, 1000);
 
-  var iframe2 = document.createElement('iframe');
-  iframe2.name = 'sync_push_test';
-  iframe2.style.cssText = 'width:400px;height:100px;border:1px solid #444';
-  document.body.appendChild(iframe2);
+// Check iframe load events
+document.getElementById('if1').onload = function() { log('✅ iframe 1 loaded (onload fired)'); };
+document.getElementById('if1').onerror = function() { log('❌ iframe 1 error'); };
+document.getElementById('if2').onload = function() { log('✅ iframe 2 loaded (onload fired)'); };
+document.getElementById('if2').onerror = function() { log('❌ iframe 2 error'); };
 
-  var form = document.createElement('form');
-  form.method = 'POST';
-  form.action = SYNC_URL;
-  form.target = iframe2.name;
-
-  var input1 = document.createElement('input');
-  input1.type = 'hidden';
-  input1.name = 'data';
-  input1.value = JSON.stringify(testData);
-  form.appendChild(input1);
-
-  var input2 = document.createElement('input');
-  input2.type = 'hidden';
-  input2.name = 'origin';
-  input2.value = window.location.origin;
-  form.appendChild(input2);
-
-  document.body.appendChild(form);
-  log('Submitting form POST...');
-  form.submit();
-  log('Form submitted, waiting for response...');
-}, 5000);
-
-// Timeout check
 setTimeout(function() {
-  log('\n⏰ 15s timeout — if no postMessage received, sync is broken');
-}, 15000);
+  log('\n⏰ 20s timeout reached');
+  log('If iframes are still blank: Google blocks embedding Apps Script in iframes from GitHub Pages.');
+  log('Solution: use a different sync approach (direct link or popup window).');
+}, 20000);
 </script>
 </body>
 </html>

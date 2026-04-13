@@ -1466,9 +1466,10 @@ function importAllState(event) {
   reader.readAsText(file);
 }
 
-// ── Google Sheets Sync (via iframe + postMessage) ─────────────────
-// The iframe inherits the user's Google session/cookies, which is
-// required for "Anyone within Chainalysis" Apps Script deployments.
+// ── Google Sheets Sync (via iframe POST + postMessage) ────────────
+// Uses a hidden iframe with a form POST to send data.
+// The iframe inherits the user's Google session cookies.
+// POST avoids URL length limits that break GET with large payloads.
 const SYNC_URL_KEY = 'semea_sync_url';
 const SYNC_URL_DEFAULT = 'https://script.google.com/a/macros/chainalysis.com/s/AKfycbyD97uyY-tE_TTikXNp7XvPy16MnB1AZGvgA2Vk7ZCBOTy_-rNsCtgQT9xFq2MIcWEtzA/exec';
 
@@ -1481,7 +1482,6 @@ window.addEventListener('message', function(event) {
   if (!event.data || !event.data.type) return;
   
   if (event.data.type === 'sync_data') {
-    // Pull response: merge reviews
     var data = event.data.data;
     if (!data || !data.reviews || data.reviews.length === 0) {
       console.log('☁️ Sync: no reviews on server');
@@ -1527,47 +1527,70 @@ window.addEventListener('message', function(event) {
         el.textContent = '☁️ Synced! (' + (result.added||0) + ' new, ' + (result.updated||0) + ' updated)';
         setTimeout(function() { el.textContent = '✅ All changes auto-saved & synced'; }, 3000);
       } else {
-        el.textContent = '⚠️ Sync error — retrying...';
-        // Retry once after 3s
-        setTimeout(function() { el.textContent = '⚠️ Sync failed — data saved locally'; }, 5000);
+        el.textContent = '⚠️ Sync error';
       }
     }
   }
 });
 
-function syncViaIframe(action, data) {
+// PULL: uses GET iframe (small URL, no data to send)
+function pullReviews() {
+  var url = getSyncUrl();
+  if (!url) return;
+  console.log('☁️ Pulling reviews...');
+  var iframeUrl = url + '?action=pull&origin=' + encodeURIComponent(window.location.origin);
+  var iframe = document.createElement('iframe');
+  iframe.style.display = 'none';
+  iframe.src = iframeUrl;
+  document.body.appendChild(iframe);
+  setTimeout(function() { if (iframe.parentNode) iframe.remove(); }, 30000);
+}
+
+// PUSH: uses POST via a hidden form inside an iframe (no URL length limit)
+function pushViaFormPost(data) {
   var url = getSyncUrl();
   if (!url) return;
   
-  var iframeUrl = url + '?action=' + action + '&origin=' + encodeURIComponent(window.location.origin);
-  if (data) {
-    var jsonStr = JSON.stringify(data);
-    iframeUrl += '&data=' + encodeURIComponent(jsonStr);
-  }
+  var origin = window.location.origin;
   
-  // Split into batches if URL too long
-  if (iframeUrl.length > 8000 && data && data.reviews) {
-    console.log('☁️ Splitting into batches...');
-    var batchSize = 3;
-    for (var i = 0; i < data.reviews.length; i += batchSize) {
-      var batch = { reviews: data.reviews.slice(i, i + batchSize) };
-      var batchUrl = url + '?action=' + action + '&origin=' + encodeURIComponent(window.location.origin) + '&data=' + encodeURIComponent(JSON.stringify(batch));
-      createSyncIframe(batchUrl);
-    }
-    return;
-  }
-  
-  createSyncIframe(iframeUrl);
-}
-
-function createSyncIframe(url) {
-  console.log('☁️ Sync iframe:', url.substring(0, 80) + '...');
+  // Create a hidden iframe
   var iframe = document.createElement('iframe');
+  iframe.name = 'sync_push_' + Date.now();
   iframe.style.display = 'none';
-  iframe.src = url;
   document.body.appendChild(iframe);
+  
+  // Create a form that targets the iframe
+  var form = document.createElement('form');
+  form.method = 'POST';
+  form.action = url;
+  form.target = iframe.name;
+  form.style.display = 'none';
+  
+  // Add the data as a hidden field
+  var inputData = document.createElement('input');
+  inputData.type = 'hidden';
+  inputData.name = 'data';
+  inputData.value = JSON.stringify(data);
+  form.appendChild(inputData);
+  
+  // Add origin for postMessage callback
+  var inputOrigin = document.createElement('input');
+  inputOrigin.type = 'hidden';
+  inputOrigin.name = 'origin';
+  inputOrigin.value = origin;
+  
+  form.appendChild(inputOrigin);
+  document.body.appendChild(form);
+  
+  // Submit the form
+  console.log('☁️ Pushing ' + (data.reviews ? data.reviews.length : 0) + ' reviews via POST...');
+  form.submit();
+  
   // Clean up after 30s
-  setTimeout(function() { if (iframe.parentNode) iframe.remove(); }, 30000);
+  setTimeout(function() {
+    if (form.parentNode) form.remove();
+    if (iframe.parentNode) iframe.remove();
+  }, 30000);
 }
 
 function pushReviews(aeName) {
@@ -1602,12 +1625,7 @@ function pushReviews(aeName) {
   var el = document.getElementById('rvAutoSave');
   if (el) el.textContent = '☁️ Syncing ' + reviews.length + ' reviews...';
   
-  syncViaIframe('push', { reviews: reviews });
-}
-
-function pullReviews() {
-  console.log('☁️ Pulling reviews from sync...');
-  syncViaIframe('pull');
+  pushViaFormPost({ reviews: reviews });
 }
 
 // ── AE-only mode via URL parameter ──────────────────────────────

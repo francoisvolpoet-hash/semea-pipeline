@@ -1466,9 +1466,9 @@ function importAllState(event) {
   reader.readAsText(file);
 }
 
-// ── Google Sheets Sync (via fetch) ─────────────────────────────────
-// Works with "Anyone within Chainalysis" Apps Script deployment.
-// Uses fetch() with redirect:follow for reliable cross-origin requests.
+// ── Google Sheets Sync (via iframe + postMessage) ─────────────────
+// The iframe inherits the user's Google session/cookies, which is
+// required for "Anyone within Chainalysis" Apps Script deployments.
 const SYNC_URL_KEY = 'semea_sync_url';
 const SYNC_URL_DEFAULT = 'https://script.google.com/a/macros/chainalysis.com/s/AKfycbyD97uyY-tE_TTikXNp7XvPy16MnB1AZGvgA2Vk7ZCBOTy_-rNsCtgQT9xFq2MIcWEtzA/exec';
 
@@ -1476,52 +1476,111 @@ function getSyncUrl() {
   return localStorage.getItem(SYNC_URL_KEY) || SYNC_URL_DEFAULT;
 }
 
-function mergeReviewsFromServer(reviews) {
-  if (!reviews || reviews.length === 0) {
-    console.log('☁️ Sync: no reviews on server');
+// Listen for messages from the sync iframe
+window.addEventListener('message', function(event) {
+  if (!event.data || !event.data.type) return;
+  
+  if (event.data.type === 'sync_data') {
+    // Pull response: merge reviews
+    var data = event.data.data;
+    if (!data || !data.reviews || data.reviews.length === 0) {
+      console.log('☁️ Sync: no reviews on server');
+      return;
+    }
+    var imported = 0;
+    data.reviews.forEach(function(rv) {
+      var ae = rv.ae_name;
+      if (!ae) return;
+      if (!aeReviews[ae]) aeReviews[ae] = {};
+      var existing = aeReviews[ae][rv.deal_id];
+      var rvTime = rv.timestamp || '';
+      if (!existing || (rvTime && (!existing.timestamp || rvTime > existing.timestamp))) {
+        aeReviews[ae][rv.deal_id] = {
+          status: rv.status || '✅ On Track',
+          next_step: rv.next_step || '',
+          blocker: rv.blocker || '',
+          revised_acv: rv.revised_acv || '',
+          revised_close: rv.revised_close || '',
+          lost_reason: rv.lost_reason || '',
+          timestamp: rvTime,
+        };
+        imported++;
+        if (!state[rv.deal_id]) state[rv.deal_id] = { updates: [] };
+        if (rv.status && rv.status.includes('On Track')) state[rv.deal_id].gutt = 'green';
+        else if (rv.status && rv.status.includes('At Risk')) state[rv.deal_id].gutt = 'yellow';
+        else state[rv.deal_id].gutt = 'red';
+      }
+    });
+    if (imported > 0) {
+      saveReviews(aeReviews);
+      saveState(state);
+      console.log('☁️ Pulled ' + imported + ' reviews from sync');
+      render();
+    }
+  }
+  
+  if (event.data.type === 'sync_result') {
+    var result = event.data.data;
+    var el = document.getElementById('rvAutoSave');
+    if (el) {
+      if (result && result.success) {
+        el.textContent = '☁️ Synced! (' + (result.added||0) + ' new, ' + (result.updated||0) + ' updated)';
+        setTimeout(function() { el.textContent = '✅ All changes auto-saved & synced'; }, 3000);
+      } else {
+        el.textContent = '⚠️ Sync error — retrying...';
+        // Retry once after 3s
+        setTimeout(function() { el.textContent = '⚠️ Sync failed — data saved locally'; }, 5000);
+      }
+    }
+  }
+});
+
+function syncViaIframe(action, data) {
+  var url = getSyncUrl();
+  if (!url) return;
+  
+  var iframeUrl = url + '?action=' + action + '&origin=' + encodeURIComponent(window.location.origin);
+  if (data) {
+    var jsonStr = JSON.stringify(data);
+    iframeUrl += '&data=' + encodeURIComponent(jsonStr);
+  }
+  
+  // Split into batches if URL too long
+  if (iframeUrl.length > 8000 && data && data.reviews) {
+    console.log('☁️ Splitting into batches...');
+    var batchSize = 3;
+    for (var i = 0; i < data.reviews.length; i += batchSize) {
+      var batch = { reviews: data.reviews.slice(i, i + batchSize) };
+      var batchUrl = url + '?action=' + action + '&origin=' + encodeURIComponent(window.location.origin) + '&data=' + encodeURIComponent(JSON.stringify(batch));
+      createSyncIframe(batchUrl);
+    }
     return;
   }
-  let imported = 0;
-  reviews.forEach(function(rv) {
-    const ae = rv.ae_name;
-    if (!ae) return;
-    if (!aeReviews[ae]) aeReviews[ae] = {};
-    const existing = aeReviews[ae][rv.deal_id];
-    const rvTime = rv.timestamp || '';
-    if (!existing || (rvTime && (!existing.timestamp || rvTime > existing.timestamp))) {
-      aeReviews[ae][rv.deal_id] = {
-        status: rv.status || '✅ On Track',
-        next_step: rv.next_step || '',
-        blocker: rv.blocker || '',
-        revised_acv: rv.revised_acv || '',
-        revised_close: rv.revised_close || '',
-        lost_reason: rv.lost_reason || '',
-        timestamp: rvTime,
-      };
-      imported++;
-      if (!state[rv.deal_id]) state[rv.deal_id] = { updates: [] };
-      if (rv.status && rv.status.includes('On Track')) state[rv.deal_id].gutt = 'green';
-      else if (rv.status && rv.status.includes('At Risk')) state[rv.deal_id].gutt = 'yellow';
-      else state[rv.deal_id].gutt = 'red';
-    }
-  });
-  if (imported > 0) {
-    saveReviews(aeReviews);
-    saveState(state);
-    console.log('☁️ Pulled ' + imported + ' reviews from sync');
-    render();
-  }
+  
+  createSyncIframe(iframeUrl);
+}
+
+function createSyncIframe(url) {
+  console.log('☁️ Sync iframe:', url.substring(0, 80) + '...');
+  var iframe = document.createElement('iframe');
+  iframe.style.display = 'none';
+  iframe.src = url;
+  document.body.appendChild(iframe);
+  // Clean up after 30s
+  setTimeout(function() { if (iframe.parentNode) iframe.remove(); }, 30000);
 }
 
 function pushReviews(aeName) {
-  const aeRv = aeReviews[aeName] || {};
+  var aeRv = aeReviews[aeName] || {};
   if (Object.keys(aeRv).length === 0) return;
-  const fq = getCurrentFQ();
-  const deals = getReviewDeals(aeName);
-  const reviews = deals
+  
+  var fq = getCurrentFQ();
+  var deals = getReviewDeals(aeName);
+  
+  var reviews = deals
     .filter(function(d) { return aeRv[d.id]; })
     .map(function(d) {
-      const rv = aeRv[d.id];
+      var rv = aeRv[d.id];
       return {
         ae_name: aeName,
         deal_id: d.id,
@@ -1537,126 +1596,18 @@ function pushReviews(aeName) {
         quarter: fq,
       };
     });
+  
   if (reviews.length === 0) return;
-
-  const el = document.getElementById('rvAutoSave');
-  if (el) el.textContent = '☁️ Syncing...';
-
-  const url = getSyncUrl();
-  if (!url) return;
-
-  // Use fetch POST to Apps Script
-  fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify({ reviews: reviews }),
-    mode: 'no-cors',
-  })
-  .then(function() {
-    // no-cors means we can't read the response, but the request was sent
-    if (el) {
-      el.textContent = '☁️ Sent! Verifying...';
-    }
-    // Verify by pulling after a short delay
-    setTimeout(function() {
-      pullReviews(function(success) {
-        if (el) {
-          el.textContent = success ? '✅ Synced to shared dashboard' : '⚠️ Sent (verification pending)';
-        }
-      });
-    }, 2000);
-  })
-  .catch(function(err) {
-    console.error('Push error:', err);
-    if (el) el.textContent = '⚠️ Sync failed — data saved locally';
-    // Fallback: try iframe method
-    syncViaIframe('push', { reviews: reviews });
-  });
+  
+  var el = document.getElementById('rvAutoSave');
+  if (el) el.textContent = '☁️ Syncing ' + reviews.length + ' reviews...';
+  
+  syncViaIframe('push', { reviews: reviews });
 }
 
-function pullReviews(callback) {
-  const url = getSyncUrl();
-  if (!url) return;
-
-  // Try fetch with redirect:follow (Apps Script redirects to the response)
-  // Use a Google Apps Script trick: append ?alt=json to try to get JSON
-  const pullUrl = url + '?action=pull&callback=1';
-  
-  // Method 1: Try JSONP-style via script tag (most reliable for Apps Script)
-  var scriptTag = document.createElement('script');
-  scriptTag.id = 'sync_pull_' + Date.now();
-  
-  // Set up the callback
-  var callbackName = '_syncCallback_' + Date.now();
-  window[callbackName] = function(data) {
-    delete window[callbackName];
-    scriptTag.remove();
-    if (data && data.reviews) {
-      mergeReviewsFromServer(data.reviews);
-      if (callback) callback(true);
-    } else {
-      if (callback) callback(false);
-    }
-  };
-  
-  // Fallback: also try iframe method in parallel
+function pullReviews() {
+  console.log('☁️ Pulling reviews from sync...');
   syncViaIframe('pull');
-  
-  // If the callback approach doesn't work, the iframe will catch it
-  setTimeout(function() {
-    if (window[callbackName]) {
-      delete window[callbackName];
-      if (scriptTag.parentNode) scriptTag.remove();
-      console.log('☁️ Pull timeout — using iframe fallback');
-    }
-  }, 10000);
-}
-
-// ── Iframe fallback (kept for compatibility) ──────────────────────
-// Listen for messages from the sync iframe
-window.addEventListener('message', function(event) {
-  if (!event.data || !event.data.type) return;
-  if (event.data.type === 'sync_data') {
-    var data = event.data.data;
-    if (data && data.reviews) {
-      mergeReviewsFromServer(data.reviews);
-    }
-  }
-  if (event.data.type === 'sync_result') {
-    var result = event.data.data;
-    var el = document.getElementById('rvAutoSave');
-    if (el && result && result.success) {
-      el.textContent = '☁️ Synced! (' + (result.added||0) + ' new, ' + (result.updated||0) + ' updated)';
-      setTimeout(function() { el.textContent = '✅ All changes auto-saved & synced'; }, 3000);
-    }
-  }
-});
-
-function syncViaIframe(action, data) {
-  var url = getSyncUrl();
-  if (!url) return;
-  var iframeUrl = url + '?action=' + action + '&origin=' + encodeURIComponent(window.location.origin);
-  if (data) {
-    iframeUrl += '&data=' + encodeURIComponent(JSON.stringify(data));
-  }
-  if (iframeUrl.length > 8000 && data && data.reviews) {
-    var batchSize = 5;
-    for (var i = 0; i < data.reviews.length; i += batchSize) {
-      var batch = { reviews: data.reviews.slice(i, i + batchSize) };
-      var batchUrl = url + '?action=' + action + '&origin=' + encodeURIComponent(window.location.origin) + '&data=' + encodeURIComponent(JSON.stringify(batch));
-      createSyncIframe(batchUrl);
-    }
-    return;
-  }
-  createSyncIframe(iframeUrl);
-}
-
-function createSyncIframe(url) {
-  var iframe = document.createElement('iframe');
-  iframe.style.display = 'none';
-  iframe.src = url;
-  document.body.appendChild(iframe);
-  setTimeout(function() { iframe.remove(); }, 30000);
 }
 
 // ── AE-only mode via URL parameter ──────────────────────────────

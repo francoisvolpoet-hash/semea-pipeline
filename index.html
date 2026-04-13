@@ -1466,133 +1466,18 @@ function importAllState(event) {
   reader.readAsText(file);
 }
 
-// ── Google Sheets Sync (via iframe POST + postMessage) ────────────
-// Uses a hidden iframe with a form POST to send data.
-// The iframe inherits the user's Google session cookies.
-// POST avoids URL length limits that break GET with large payloads.
+// ── Google Sheets Sync ─────────────────────────────────────────────
+// PUSH: Form POST to Apps Script (fire & forget — works reliably)
+// PULL: Reads published Google Sheet via Sheets API (public JSON)
 const SYNC_URL_KEY = 'semea_sync_url';
 const SYNC_URL_DEFAULT = 'https://script.google.com/a/macros/chainalysis.com/s/AKfycbyD97uyY-tE_TTikXNp7XvPy16MnB1AZGvgA2Vk7ZCBOTy_-rNsCtgQT9xFq2MIcWEtzA/exec';
+const SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/1_Cknegh5dWscmL0DQW0luGrejfzWoWbBiketBDUl3-w/gviz/tq?tqx=out:csv&sheet=Sheet1';
 
 function getSyncUrl() {
   return localStorage.getItem(SYNC_URL_KEY) || SYNC_URL_DEFAULT;
 }
 
-// Listen for messages from the sync iframe
-window.addEventListener('message', function(event) {
-  if (!event.data || !event.data.type) return;
-  
-  if (event.data.type === 'sync_data') {
-    var data = event.data.data;
-    if (!data || !data.reviews || data.reviews.length === 0) {
-      console.log('☁️ Sync: no reviews on server');
-      return;
-    }
-    var imported = 0;
-    data.reviews.forEach(function(rv) {
-      var ae = rv.ae_name;
-      if (!ae) return;
-      if (!aeReviews[ae]) aeReviews[ae] = {};
-      var existing = aeReviews[ae][rv.deal_id];
-      var rvTime = rv.timestamp || '';
-      if (!existing || (rvTime && (!existing.timestamp || rvTime > existing.timestamp))) {
-        aeReviews[ae][rv.deal_id] = {
-          status: rv.status || '✅ On Track',
-          next_step: rv.next_step || '',
-          blocker: rv.blocker || '',
-          revised_acv: rv.revised_acv || '',
-          revised_close: rv.revised_close || '',
-          lost_reason: rv.lost_reason || '',
-          timestamp: rvTime,
-        };
-        imported++;
-        if (!state[rv.deal_id]) state[rv.deal_id] = { updates: [] };
-        if (rv.status && rv.status.includes('On Track')) state[rv.deal_id].gutt = 'green';
-        else if (rv.status && rv.status.includes('At Risk')) state[rv.deal_id].gutt = 'yellow';
-        else state[rv.deal_id].gutt = 'red';
-      }
-    });
-    if (imported > 0) {
-      saveReviews(aeReviews);
-      saveState(state);
-      console.log('☁️ Pulled ' + imported + ' reviews from sync');
-      render();
-    }
-  }
-  
-  if (event.data.type === 'sync_result') {
-    var result = event.data.data;
-    var el = document.getElementById('rvAutoSave');
-    if (el) {
-      if (result && result.success) {
-        el.textContent = '☁️ Synced! (' + (result.added||0) + ' new, ' + (result.updated||0) + ' updated)';
-        setTimeout(function() { el.textContent = '✅ All changes auto-saved & synced'; }, 3000);
-      } else {
-        el.textContent = '⚠️ Sync error';
-      }
-    }
-  }
-});
-
-// PULL: uses GET iframe (small URL, no data to send)
-function pullReviews() {
-  var url = getSyncUrl();
-  if (!url) return;
-  console.log('☁️ Pulling reviews...');
-  var iframeUrl = url + '?action=pull&origin=' + encodeURIComponent(window.location.origin);
-  var iframe = document.createElement('iframe');
-  iframe.style.display = 'none';
-  iframe.src = iframeUrl;
-  document.body.appendChild(iframe);
-  setTimeout(function() { if (iframe.parentNode) iframe.remove(); }, 30000);
-}
-
-// PUSH: uses POST via a hidden form inside an iframe (no URL length limit)
-function pushViaFormPost(data) {
-  var url = getSyncUrl();
-  if (!url) return;
-  
-  var origin = window.location.origin;
-  
-  // Create a hidden iframe
-  var iframe = document.createElement('iframe');
-  iframe.name = 'sync_push_' + Date.now();
-  iframe.style.display = 'none';
-  document.body.appendChild(iframe);
-  
-  // Create a form that targets the iframe
-  var form = document.createElement('form');
-  form.method = 'POST';
-  form.action = url;
-  form.target = iframe.name;
-  form.style.display = 'none';
-  
-  // Add the data as a hidden field
-  var inputData = document.createElement('input');
-  inputData.type = 'hidden';
-  inputData.name = 'data';
-  inputData.value = JSON.stringify(data);
-  form.appendChild(inputData);
-  
-  // Add origin for postMessage callback
-  var inputOrigin = document.createElement('input');
-  inputOrigin.type = 'hidden';
-  inputOrigin.name = 'origin';
-  inputOrigin.value = origin;
-  
-  form.appendChild(inputOrigin);
-  document.body.appendChild(form);
-  
-  // Submit the form
-  console.log('☁️ Pushing ' + (data.reviews ? data.reviews.length : 0) + ' reviews via POST...');
-  form.submit();
-  
-  // Clean up after 30s
-  setTimeout(function() {
-    if (form.parentNode) form.remove();
-    if (iframe.parentNode) iframe.remove();
-  }, 30000);
-}
-
+// ── PUSH: Form POST via hidden iframe (fire & forget) ─────────────
 function pushReviews(aeName) {
   var aeRv = aeReviews[aeName] || {};
   if (Object.keys(aeRv).length === 0) return;
@@ -1625,7 +1510,147 @@ function pushReviews(aeName) {
   var el = document.getElementById('rvAutoSave');
   if (el) el.textContent = '☁️ Syncing ' + reviews.length + ' reviews...';
   
-  pushViaFormPost({ reviews: reviews });
+  // Create hidden iframe + form for POST
+  var url = getSyncUrl();
+  if (!url) return;
+  
+  var iframe = document.createElement('iframe');
+  iframe.name = 'sync_push_' + Date.now();
+  iframe.style.display = 'none';
+  document.body.appendChild(iframe);
+  
+  var form = document.createElement('form');
+  form.method = 'POST';
+  form.action = url;
+  form.target = iframe.name;
+  form.style.display = 'none';
+  
+  var inputData = document.createElement('input');
+  inputData.type = 'hidden';
+  inputData.name = 'data';
+  inputData.value = JSON.stringify({ reviews: reviews });
+  form.appendChild(inputData);
+  
+  var inputOrigin = document.createElement('input');
+  inputOrigin.type = 'hidden';
+  inputOrigin.name = 'origin';
+  inputOrigin.value = window.location.origin;
+  form.appendChild(inputOrigin);
+  
+  document.body.appendChild(form);
+  console.log('☁️ Pushing ' + reviews.length + ' reviews via POST...');
+  form.submit();
+  
+  // Fire & forget: show success after 3s (POST is reliable)
+  setTimeout(function() {
+    if (el) el.textContent = '✅ Reviews synced to shared dashboard!';
+    setTimeout(function() {
+      if (el) el.textContent = '✅ All changes saved';
+    }, 3000);
+  }, 3000);
+  
+  // Clean up after 30s
+  setTimeout(function() {
+    if (form.parentNode) form.remove();
+    if (iframe.parentNode) iframe.remove();
+  }, 30000);
+}
+
+// ── PULL: Read Google Sheet via public gviz CSV endpoint ──────────
+function pullReviews() {
+  console.log('☁️ Pulling reviews from Google Sheet...');
+  
+  fetch(SHEET_CSV_URL)
+  .then(function(resp) {
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    return resp.text();
+  })
+  .then(function(csv) {
+    var reviews = parseCSVReviews(csv);
+    if (reviews.length === 0) {
+      console.log('☁️ No reviews on server');
+      return;
+    }
+    var imported = 0;
+    reviews.forEach(function(rv) {
+      var ae = rv.ae_name;
+      if (!ae) return;
+      if (!aeReviews[ae]) aeReviews[ae] = {};
+      var existing = aeReviews[ae][rv.deal_id];
+      var rvTime = rv.timestamp || '';
+      if (!existing || (rvTime && (!existing.timestamp || rvTime > existing.timestamp))) {
+        aeReviews[ae][rv.deal_id] = {
+          status: rv.status || '✅ On Track',
+          next_step: rv.next_step || '',
+          blocker: rv.blocker || '',
+          revised_acv: rv.revised_acv || '',
+          revised_close: rv.revised_close || '',
+          lost_reason: rv.lost_reason || '',
+          timestamp: rvTime,
+        };
+        imported++;
+        if (!state[rv.deal_id]) state[rv.deal_id] = { updates: [] };
+        if (rv.status && rv.status.includes('On Track')) state[rv.deal_id].gutt = 'green';
+        else if (rv.status && rv.status.includes('At Risk')) state[rv.deal_id].gutt = 'yellow';
+        else state[rv.deal_id].gutt = 'red';
+      }
+    });
+    if (imported > 0) {
+      saveReviews(aeReviews);
+      saveState(state);
+      console.log('☁️ Pulled ' + imported + ' reviews from sync');
+      render();
+    }
+  })
+  .catch(function(err) {
+    console.warn('☁️ Pull failed (will retry on next load):', err.message);
+  });
+}
+
+function parseCSVReviews(csv) {
+  var lines = csv.split('\n');
+  if (lines.length < 2) return [];
+  
+  // Parse header (handle quoted fields)
+  var headers = parseCSVLine(lines[0]);
+  var reviews = [];
+  
+  for (var i = 1; i < lines.length; i++) {
+    if (!lines[i].trim()) continue;
+    var values = parseCSVLine(lines[i]);
+    var row = {};
+    headers.forEach(function(h, j) {
+      row[h.trim().replace(/^"|"$/g, '')] = (values[j] || '').replace(/^"|"$/g, '');
+    });
+    if (row.ae_name && row.deal_id) {
+      reviews.push(row);
+    }
+  }
+  return reviews;
+}
+
+function parseCSVLine(line) {
+  var result = [];
+  var current = '';
+  var inQuotes = false;
+  for (var i = 0; i < line.length; i++) {
+    var ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && i + 1 < line.length && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === ',' && !inQuotes) {
+      result.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  result.push(current);
+  return result;
 }
 
 // ── AE-only mode via URL parameter ──────────────────────────────

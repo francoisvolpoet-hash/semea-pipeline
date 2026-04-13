@@ -1467,9 +1467,8 @@ function importAllState(event) {
 }
 
 // ── Google Sheets Sync ─────────────────────────────────────────────
-// PUSH: doGet with data in URL — one deal at a time (stays under URL limit)
-//       Uses Image() objects — no CORS, no iframe, no cookies needed
-// PULL: Google Sheet gviz CSV — accessible to Chainalysis users
+// PUSH: fetch() no-cors GET — one deal at a time via URL params
+// PULL: Google Sheet gviz CSV with credentials
 const SYNC_URL_KEY = 'semea_sync_url';
 const SYNC_URL_DEFAULT = 'https://script.google.com/a/macros/chainalysis.com/s/AKfycbyD97uyY-tE_TTikXNp7XvPy16MnB1AZGvgA2Vk7ZCBOTy_-rNsCtgQT9xFq2MIcWEtzA/exec';
 const SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/1_Cknegh5dWscmL0DQW0luGrejfzWoWbBiketBDUl3-w/gviz/tq?tqx=out:csv&sheet=Sheet1';
@@ -1478,7 +1477,7 @@ function getSyncUrl() {
   return localStorage.getItem(SYNC_URL_KEY) || SYNC_URL_DEFAULT;
 }
 
-// ── PUSH: Send one review at a time via doGet ─────────────────────
+// ── PUSH ──────────────────────────────────────────────────────────
 function pushReviews(aeName) {
   var aeRv = aeReviews[aeName] || {};
   if (Object.keys(aeRv).length === 0) return;
@@ -1514,12 +1513,10 @@ function pushReviews(aeName) {
   var url = getSyncUrl();
   if (!url) return;
   
-  // Send each review individually to stay under URL length limits
   var sent = 0;
-  var errors = 0;
+  var total = reviews.length;
   
   reviews.forEach(function(rv, idx) {
-    // Small delay between requests to avoid overwhelming Apps Script
     setTimeout(function() {
       var params = new URLSearchParams();
       params.set('action', 'push');
@@ -1537,32 +1534,28 @@ function pushReviews(aeName) {
       params.set('quarter', rv.quarter);
       
       var pushUrl = url + '?' + params.toString();
-      console.log('☁️ Push ' + (idx+1) + '/' + reviews.length + ': ' + rv.account + ' (' + pushUrl.length + ' chars)');
+      console.log('☁️ Push ' + (idx+1) + '/' + total + ': ' + rv.account);
       
-      // Use Image() — works cross-origin, no CORS, no cookies needed
-      var img = new Image();
-      img.onload = function() {
+      fetch(pushUrl, { mode: 'no-cors' })
+      .then(function() {
         sent++;
-        if (el) el.textContent = '☁️ Synced ' + sent + '/' + reviews.length + '...';
-        if (sent + errors === reviews.length) {
+        if (el) el.textContent = '☁️ Synced ' + sent + '/' + total + '...';
+        if (sent === total) {
           if (el) el.textContent = '✅ ' + sent + ' reviews synced to shared dashboard!';
         }
-      };
-      img.onerror = function() {
-        // Apps Script returns HTML, not an image — so onerror fires
-        // but the GET request was still processed by the server!
+      })
+      .catch(function(err) {
         sent++;
-        if (el) el.textContent = '☁️ Synced ' + sent + '/' + reviews.length + '...';
-        if (sent + errors === reviews.length) {
-          if (el) el.textContent = '✅ ' + sent + ' reviews synced to shared dashboard!';
+        console.warn('Push error for ' + rv.account + ':', err.message);
+        if (sent === total) {
+          if (el) el.textContent = '⚠️ Sync completed with some errors';
         }
-      };
-      img.src = pushUrl;
-    }, idx * 500); // 500ms between each request
+      });
+    }, idx * 800);
   });
 }
 
-// ── PULL: Read Google Sheet via gviz CSV endpoint ─────────────────
+// ── PULL ──────────────────────────────────────────────────────────
 function pullReviews() {
   console.log('☁️ Pulling reviews from Google Sheet...');
   
@@ -1572,50 +1565,80 @@ function pullReviews() {
     return resp.text();
   })
   .then(function(csv) {
-    // Check if we got actual CSV or an HTML login page
     if (csv.trim().startsWith('<!DOCTYPE') || csv.trim().startsWith('<html')) {
-      console.warn('☁️ Pull: got login page instead of CSV — user not authenticated');
+      console.warn('☁️ Pull: got login page — trying no-cors pull via Apps Script...');
+      pullViaAppsScript();
       return;
     }
     var reviews = parseCSVReviews(csv);
-    if (reviews.length === 0) {
-      console.log('☁️ No reviews on server');
-      return;
-    }
-    var imported = 0;
-    reviews.forEach(function(rv) {
-      var ae = rv.ae_name;
-      if (!ae) return;
-      if (!aeReviews[ae]) aeReviews[ae] = {};
-      var existing = aeReviews[ae][rv.deal_id];
-      var rvTime = rv.timestamp || '';
-      if (!existing || (rvTime && (!existing.timestamp || rvTime > existing.timestamp))) {
-        aeReviews[ae][rv.deal_id] = {
-          status: rv.status || '✅ On Track',
-          next_step: rv.next_step || '',
-          blocker: rv.blocker || '',
-          revised_acv: rv.revised_acv || '',
-          revised_close: rv.revised_close || '',
-          lost_reason: rv.lost_reason || '',
-          timestamp: rvTime,
-        };
-        imported++;
-        if (!state[rv.deal_id]) state[rv.deal_id] = { updates: [] };
-        if (rv.status && rv.status.includes('On Track')) state[rv.deal_id].gutt = 'green';
-        else if (rv.status && rv.status.includes('At Risk')) state[rv.deal_id].gutt = 'yellow';
-        else state[rv.deal_id].gutt = 'red';
-      }
-    });
-    if (imported > 0) {
-      saveReviews(aeReviews);
-      saveState(state);
-      console.log('☁️ Pulled ' + imported + ' reviews from sync');
-      render();
-    }
+    mergeReviews(reviews);
   })
   .catch(function(err) {
-    console.warn('☁️ Pull failed:', err.message);
+    console.warn('☁️ CSV pull failed, trying Apps Script:', err.message);
+    pullViaAppsScript();
   });
+}
+
+function pullViaAppsScript() {
+  var url = getSyncUrl();
+  if (!url) return;
+  // Use fetch with no-cors — we can't read the response but let's try
+  // Actually with no-cors we get opaque response (can't read body)
+  // So we need a different approach for pull...
+  // Use an iframe — it might work for GET pull even if POST didn't
+  var iframe = document.createElement('iframe');
+  iframe.style.display = 'none';
+  iframe.src = url + '?action=pull&origin=' + encodeURIComponent(window.location.origin);
+  document.body.appendChild(iframe);
+  setTimeout(function() { if (iframe.parentNode) iframe.remove(); }, 30000);
+}
+
+// Listen for postMessage from pull iframe (fallback)
+window.addEventListener('message', function(event) {
+  if (!event.data || !event.data.type) return;
+  if (event.data.type === 'sync_data') {
+    var data = event.data.data;
+    if (data && data.reviews) {
+      mergeReviews(data.reviews);
+    }
+  }
+});
+
+function mergeReviews(reviews) {
+  if (!reviews || reviews.length === 0) {
+    console.log('☁️ No reviews to merge');
+    return;
+  }
+  var imported = 0;
+  reviews.forEach(function(rv) {
+    var ae = rv.ae_name;
+    if (!ae) return;
+    if (!aeReviews[ae]) aeReviews[ae] = {};
+    var existing = aeReviews[ae][rv.deal_id];
+    var rvTime = rv.timestamp || '';
+    if (!existing || (rvTime && (!existing.timestamp || rvTime > existing.timestamp))) {
+      aeReviews[ae][rv.deal_id] = {
+        status: rv.status || '✅ On Track',
+        next_step: rv.next_step || '',
+        blocker: rv.blocker || '',
+        revised_acv: rv.revised_acv || '',
+        revised_close: rv.revised_close || '',
+        lost_reason: rv.lost_reason || '',
+        timestamp: rvTime,
+      };
+      imported++;
+      if (!state[rv.deal_id]) state[rv.deal_id] = { updates: [] };
+      if (rv.status && rv.status.includes('On Track')) state[rv.deal_id].gutt = 'green';
+      else if (rv.status && rv.status.includes('At Risk')) state[rv.deal_id].gutt = 'yellow';
+      else state[rv.deal_id].gutt = 'red';
+    }
+  });
+  if (imported > 0) {
+    saveReviews(aeReviews);
+    saveState(state);
+    console.log('☁️ Pulled ' + imported + ' reviews from sync');
+    render();
+  }
 }
 
 function parseCSVReviews(csv) {

@@ -981,6 +981,7 @@ function loadReviews() { try { return JSON.parse(localStorage.getItem(RV_KEY)) |
 function saveReviews(rv) { localStorage.setItem(RV_KEY, JSON.stringify(rv)); }
 
 let aeReviews = loadReviews();
+let _currentReviewDeals = []; // Global ref for event delegation
 
 function getReviewDeals(aeName) {
   const fq = getCurrentFQ();
@@ -1043,10 +1044,10 @@ function populateAESelector() {
 }
 
 function renderReviewCards() {
-  const aeName = document.getElementById('aeSelect').value;
-  const header = document.getElementById('reviewHeader');
-  const cards = document.getElementById('dealCards');
-  const submit = document.getElementById('reviewSubmit');
+  var aeName = document.getElementById('aeSelect').value;
+  var header = document.getElementById('reviewHeader');
+  var cards = document.getElementById('dealCards');
+  var submit = document.getElementById('reviewSubmit');
 
   if (!aeName) {
     header.style.display = 'none';
@@ -1056,90 +1057,111 @@ function renderReviewCards() {
     return;
   }
 
-  const deals = getReviewDeals(aeName);
+  var deals = getReviewDeals(aeName);
+  _currentReviewDeals = deals; // Store globally for event delegation
   header.style.display = 'block';
   submit.style.display = 'flex';
 
   // Compute stats
-  const totalNACV = deals.reduce((s, d) => s + (d.NACV_converted || 0), 0);
-  const commitDeals = deals.filter(d => d.Forecast_Category === 'Commit' || d.Forecast_Category === 'Submitted');
-  const commitNACV = commitDeals.reduce((s, d) => s + (d.NACV_converted || 0), 0);
+  var totalNACV = deals.reduce(function(s,d){return s+(d.NACV_converted||0)},0);
+  var commitDeals = deals.filter(function(d){return d.Forecast_Category==='Commit'||d.Forecast_Category==='Submitted'});
+  var commitNACV = commitDeals.reduce(function(s,d){return s+(d.NACV_converted||0)},0);
 
   // Count reviewed
-  const aeRv = aeReviews[aeName] || {};
-  const reviewed = deals.filter(d => aeRv[d.id]).length;
+  var aeRv = aeReviews[aeName] || {};
+  var reviewed = deals.filter(function(d){return aeRv[d.id]}).length;
 
-  document.getElementById('aeDealCount').textContent = `${deals.length} deals this quarter`;
+  document.getElementById('aeDealCount').textContent = deals.length + ' deals this quarter';
   document.getElementById('rvDeals').textContent = deals.length;
   document.getElementById('rvNACV').textContent = fmt(totalNACV);
   document.getElementById('rvCommit').textContent = fmt(commitNACV);
-  document.getElementById('rvReviewed').textContent = `${reviewed}/${deals.length}`;
+  document.getElementById('rvReviewed').textContent = reviewed + '/' + deals.length;
 
-  const pct = deals.length > 0 ? Math.round(reviewed / deals.length * 100) : 0;
+  var pct = deals.length > 0 ? Math.round(reviewed / deals.length * 100) : 0;
   document.getElementById('rvProgressFill').style.width = pct + '%';
   document.getElementById('rvProgressText').textContent = pct + '%';
   document.getElementById('rvProgressText').style.color = pct === 100 ? 'var(--green)' : pct > 0 ? 'var(--yellow)' : 'var(--muted)';
 
-  // Check for new deals (not in previous review data)
-  const previousIds = new Set(Object.keys(aeRv));
+  var previousIds = {};
+  Object.keys(aeRv).forEach(function(k){ previousIds[k]=true; });
 
-  // Render cards
-  cards.innerHTML = deals.map((d, i) => {
-    const rv = (aeRv[d.id]) || {};
-    const status = rv.status || '✅ On Track';
-    const nextStep = rv.next_step || '';
-    const blocker = rv.blocker || '';
-    const isNew = !previousIds.has(d.id) && Object.keys(aeRv).length > 0;
+  // Render cards — NO inline event handlers, use data-idx instead
+  var html = '';
+  for (var i = 0; i < deals.length; i++) {
+    var d = deals[i];
+    var rv = aeRv[d.id] || {};
+    var status = rv.status || '✅ On Track';
+    var nextStep = rv.next_step || '';
+    var blocker = rv.blocker || '';
+    var isNew = !previousIds[d.id] && Object.keys(aeRv).length > 0;
 
-    let cardClass = 'deal-card';
-    if (status.includes('At Risk')) cardClass += ' card-risk';
-    else if (status.includes('Slipping')) cardClass += ' card-slip';
-    else if (status.includes('Upside')) cardClass += ' card-upside';
-    else if (status.includes('Lost')) cardClass += ' card-slip';
+    var cardClass = 'deal-card';
+    if (status.indexOf('At Risk') >= 0) cardClass += ' card-risk';
+    else if (status.indexOf('Slipping') >= 0) cardClass += ' card-slip';
+    else if (status.indexOf('Upside') >= 0) cardClass += ' card-upside';
+    else if (status.indexOf('Lost') >= 0) cardClass += ' card-slip';
     if (isNew) cardClass += ' card-new';
 
-    return `
-      <div class="${cardClass}" id="card-${i}">
-        <div class="card-top">
-          <div class="card-info">
-            <div class="card-account">${d.Account_Name}${isNew ? ' <span class="card-new-badge">NEW</span>' : ''}</div>
-            <div class="card-deal">${d.Opportunity_Name}</div>
-            <div class="card-tags">
-              ${stageBadge(d.Stage)}
-              ${forecastBadge(d.Forecast_Category)}
-              <span class="badge" style="background:rgba(99,102,241,.1);color:var(--accent)">${d.Type}</span>
-              ${parseFloat(d.Age) > 180 ? '<span class="badge" style="background:rgba(239,68,68,.1);color:var(--red)">⏰ ' + Math.round(d.Age) + 'd</span>' : ''}
-            </div>
-          </div>
-          <div class="card-amount">
-            <div class="amt">${fmtFull(d.NACV_converted || 0)}</div>
-            <div class="close">Close: ${d.Close_Date || '—'}</div>
-          </div>
-        </div>
-        <div class="card-inputs">
-          <div>
-            <label>Status</label>
-            <select class="status-select" id="rv-status-${i}" onchange="autoSaveReview('${aeName}','${d.id.replace(/'/g,"\'")}',${i})">
-              <option value="✅ On Track" ${status === '✅ On Track' ? 'selected' : ''}>✅ On Track</option>
-              <option value="⚠️ At Risk" ${status === '⚠️ At Risk' ? 'selected' : ''}>⚠️ At Risk</option>
-              <option value="🔴 Slipping" ${status === '🔴 Slipping' ? 'selected' : ''}>🔴 Slipping</option>
-              <option value="🚀 Upside" ${status === '🚀 Upside' ? 'selected' : ''}>🚀 Upside</option>
-              <option value="❌ Lost" ${status === '❌ Lost' ? 'selected' : ''}>❌ Lost</option>
-            </select>
-          </div>
-          <div>
-            <label>Next Steps</label>
-            <textarea id="rv-next-${i}" placeholder="What's the next concrete action?" oninput="autoSaveReview('${aeName}','${d.id.replace(/'/g,"\'")}',${i})">${nextStep}</textarea>
-          </div>
-          <div>
-            <label>Blocker / Risk</label>
-            <textarea id="rv-blocker-${i}" placeholder="Any blocker or concern?" oninput="autoSaveReview('${aeName}','${d.id.replace(/'/g,"\'")}',${i})">${blocker}</textarea>
-          </div>
-        </div>
-        <div class="card-saved" id="rv-saved-${i}">✅ Saved</div>
-      </div>
-    `;
-  }).join('');
+    // Escape HTML entities in text content to prevent XSS/breakage
+    var safeNext = nextStep.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    var safeBlocker = blocker.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    var safeAccount = (d.Account_Name||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    var safeOpp = (d.Opportunity_Name||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+    html += '<div class="' + cardClass + '" id="card-' + i + '">'
+      + '<div class="card-top">'
+      + '<div class="card-info">'
+      + '<div class="card-account">' + safeAccount + (isNew ? ' <span class="card-new-badge">NEW</span>' : '') + '</div>'
+      + '<div class="card-deal">' + safeOpp + '</div>'
+      + '<div class="card-tags">'
+      + stageBadge(d.Stage)
+      + forecastBadge(d.Forecast_Category)
+      + '<span class="badge" style="background:rgba(99,102,241,.1);color:var(--accent)">' + (d.Type||'') + '</span>'
+      + (parseFloat(d.Age) > 180 ? '<span class="badge" style="background:rgba(239,68,68,.1);color:var(--red)">⏰ ' + Math.round(d.Age) + 'd</span>' : '')
+      + '</div></div>'
+      + '<div class="card-amount">'
+      + '<div class="amt">' + fmtFull(d.NACV_converted || 0) + '</div>'
+      + '<div class="close">Close: ' + (d.Close_Date || '—') + '</div>'
+      + '</div></div>'
+      + '<div class="card-inputs">'
+      + '<div><label>Status</label>'
+      + '<select class="status-select rv-input" id="rv-status-' + i + '" data-idx="' + i + '">'
+      + '<option value="✅ On Track"' + (status==='✅ On Track'?' selected':'') + '>✅ On Track</option>'
+      + '<option value="⚠️ At Risk"' + (status==='⚠️ At Risk'?' selected':'') + '>⚠️ At Risk</option>'
+      + '<option value="🔴 Slipping"' + (status==='🔴 Slipping'?' selected':'') + '>🔴 Slipping</option>'
+      + '<option value="🚀 Upside"' + (status==='🚀 Upside'?' selected':'') + '>🚀 Upside</option>'
+      + '<option value="❌ Lost"' + (status==='❌ Lost'?' selected':'') + '>❌ Lost</option>'
+      + '</select></div>'
+      + '<div><label>Next Steps</label>'
+      + '<textarea class="rv-input" id="rv-next-' + i + '" data-idx="' + i + '" placeholder="What's the next concrete action?">' + safeNext + '</textarea></div>'
+      + '<div><label>Blocker / Risk</label>'
+      + '<textarea class="rv-input" id="rv-blocker-' + i + '" data-idx="' + i + '" placeholder="Any blocker or concern?">' + safeBlocker + '</textarea></div>'
+      + '</div>'
+      + '<div class="card-saved" id="rv-saved-' + i + '">✅ Saved</div>'
+      + '</div>';
+  }
+  cards.innerHTML = html;
+}
+
+// Event delegation for all review card inputs — no inline handlers needed
+document.getElementById('dealCards').addEventListener('change', function(e) {
+  if (e.target.classList.contains('rv-input')) {
+    var idx = parseInt(e.target.dataset.idx);
+    if (!isNaN(idx)) triggerAutoSave(idx);
+  }
+});
+document.getElementById('dealCards').addEventListener('input', function(e) {
+  if (e.target.classList.contains('rv-input') && e.target.tagName === 'TEXTAREA') {
+    var idx = parseInt(e.target.dataset.idx);
+    if (!isNaN(idx)) triggerAutoSave(idx);
+  }
+});
+
+function triggerAutoSave(idx) {
+  var aeName = document.getElementById('aeSelect').value;
+  if (!aeName || !_currentReviewDeals[idx]) return;
+  var dealId = _currentReviewDeals[idx].id;
+  autoSaveReview(aeName, dealId, idx);
 }
 
 function onStatusChange(idx, aeName, dealId) {
@@ -1761,55 +1783,78 @@ const urlParams = new URLSearchParams(window.location.search);
 const aeParam = urlParams.get('ae');
 
 function enterAEMode(aeName) {
-  // Lock into AE-only mode
-  // 1. Hide RVP UI elements
-  document.querySelectorAll('.vtab').forEach(b => b.style.display = 'none');
-  document.querySelectorAll('.export-btn').forEach(b => b.style.display = 'none');
-  document.querySelectorAll('.import-reviews-btn').forEach(b => b.style.display = 'none');
-  document.querySelector('.header h1').textContent = '\u{1F3AF} SEMEA Pipeline Review';
-  
-  // 2. Show review container, hide main sections
-  const mainSections = ['.kpi-row','.charts-row','.filters','.table-meta','.table-wrap','#extraKpis'];
-  mainSections.forEach(sel => {
-    document.querySelectorAll(sel).forEach(el => el.style.display = 'none');
-  });
-  document.getElementById('reviewContainer').classList.add('active');
-  document.getElementById('summaryContainer').classList.remove('active');
-  currentView = 'review';
-  
-  // 3. Populate AE selector FIRST, then set value, then render
-  populateAESelector();
-  const aeSelect = document.getElementById('aeSelect');
-  // Try exact match first, then fuzzy (partial/case-insensitive)
-  aeSelect.value = aeName;
-  if (!aeSelect.value || aeSelect.value === '') {
-    // Fuzzy match: find option that contains the search term
-    const needle = aeName.toLowerCase();
-    const opts = Array.from(aeSelect.options);
-    const match = opts.find(o => o.value && o.value.toLowerCase().includes(needle))
-               || opts.find(o => o.value && needle.includes(o.value.split(' ')[0].toLowerCase()));
-    if (match) {
-      aeSelect.value = match.value;
-      console.log('AE mode: fuzzy matched "' + aeName + '" → "' + match.value + '"');
+  try {
+    // 1. Hide RVP UI elements (CSS .ae-mode handles most, this is backup)
+    var vtabs = document.querySelectorAll('.vtab');
+    for (var i = 0; i < vtabs.length; i++) vtabs[i].style.display = 'none';
+    var expBtns = document.querySelectorAll('.export-btn');
+    for (var i = 0; i < expBtns.length; i++) expBtns[i].style.display = 'none';
+    var impBtns = document.querySelectorAll('.import-reviews-btn');
+    for (var i = 0; i < impBtns.length; i++) impBtns[i].style.display = 'none';
+    var h1 = document.querySelector('.header h1');
+    if (h1) h1.textContent = '\u{1F3AF} SEMEA Pipeline Review';
+    
+    // 2. Show review container, hide main sections
+    var mainSections = ['.kpi-row','.charts-row','.filters','.table-meta','.table-wrap','#extraKpis'];
+    mainSections.forEach(function(sel) {
+      var els = document.querySelectorAll(sel);
+      for (var i = 0; i < els.length; i++) els[i].style.display = 'none';
+    });
+    document.getElementById('reviewContainer').classList.add('active');
+    document.getElementById('summaryContainer').classList.remove('active');
+    currentView = 'review';
+    
+    // 3. Populate AE selector
+    populateAESelector();
+    var aeSelect = document.getElementById('aeSelect');
+    
+    // Try exact match first
+    aeSelect.value = aeName;
+    
+    // Fuzzy match if exact didn't work
+    if (!aeSelect.value) {
+      var needle = aeName.toLowerCase();
+      for (var i = 0; i < aeSelect.options.length; i++) {
+        var opt = aeSelect.options[i];
+        if (opt.value && opt.value.toLowerCase().indexOf(needle) >= 0) {
+          aeSelect.value = opt.value;
+          break;
+        }
+      }
+      // Try matching just first name
+      if (!aeSelect.value) {
+        for (var i = 0; i < aeSelect.options.length; i++) {
+          var opt = aeSelect.options[i];
+          if (opt.value && opt.value.toLowerCase().split(' ')[0] === needle) {
+            aeSelect.value = opt.value;
+            break;
+          }
+        }
+      }
     }
-  }
-  if (aeSelect.value && aeSelect.value !== '') {
-    aeSelect.disabled = true;
-    aeSelect.style.opacity = '1';
+    
+    // Style the selector but NEVER disable it
     aeSelect.style.fontWeight = '700';
+    aeSelect.style.opacity = '1';
+    
+    // 4. Render cards
+    renderReviewCards();
+    
+  } catch(err) {
+    console.error('enterAEMode error:', err);
+    // Show error visually so user can report it
+    var el = document.getElementById('dealCards');
+    if (el) el.innerHTML = '<div style="padding:20px;color:red;font-family:monospace">Error: ' + err.message + '</div>';
   }
-  
-  // 4. NOW render cards (aeSelect.value is already set)
-  renderReviewCards();
 }
 
 // Check for AE mode: URL param or sessionStorage
 const sessionAE = sessionStorage.getItem('semea_ae_identity');
 
 if (aeParam) {
-  enterAEMode(aeParam);
+  try { enterAEMode(aeParam); } catch(e) { console.error('AE init error:', e); }
 } else if (sessionAE) {
-  enterAEMode(sessionAE);
+  try { enterAEMode(sessionAE); } catch(e) { console.error('AE init error:', e); }
 } else {
   // RVP mode: normal dashboard
   const savedDataDate = localStorage.getItem('semea_data_date');

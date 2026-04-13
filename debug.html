@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Debug</title></head>
+<body style="font-family:monospace;padding:20px;background:#111;color:#0f0">
+<h2>🔍 Dashboard Debug</h2>
+<pre id="log"></pre>
+<script>
+function log(msg) {
+  document.getElementById('log').textContent += msg + '\n';
+}
+
+log('1. URL: ' + window.location.href);
+log('2. URL params: ' + window.location.search);
+
+const urlParams = new URLSearchParams(window.location.search);
+const ae = urlParams.get('ae');
+log('3. ae param: ' + JSON.stringify(ae));
+
+log('4. Loading main dashboard script...');
+
+// Fetch the actual index.html and check if JS loads
+fetch('index.html')
+  .then(r => r.text())
+  .then(html => {
+    log('5. index.html fetched: ' + html.length + ' bytes');
+    
+    // Check for key elements
+    log('6. Has reviewContainer: ' + html.includes('id="reviewContainer"'));
+    log('7. Has enterAEMode: ' + html.includes('function enterAEMode'));
+    log('8. Has SYNC_URL_KEY once: ' + (html.split('const SYNC_URL_KEY').length - 1));
+    
+    // Try to extract and eval just the URL param check
+    log('9. Test complete - check results above');
+  })
+  .catch(err => log('ERROR: ' + err));
+</script>
+</body></html>

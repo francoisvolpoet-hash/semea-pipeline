@@ -1780,10 +1780,24 @@ function enterAEMode(aeName) {
   // 3. Populate AE selector FIRST, then set value, then render
   populateAESelector();
   const aeSelect = document.getElementById('aeSelect');
+  // Try exact match first, then fuzzy (partial/case-insensitive)
   aeSelect.value = aeName;
-  aeSelect.disabled = true;
-  aeSelect.style.opacity = '1';
-  aeSelect.style.fontWeight = '700';
+  if (!aeSelect.value || aeSelect.value === '') {
+    // Fuzzy match: find option that contains the search term
+    const needle = aeName.toLowerCase();
+    const opts = Array.from(aeSelect.options);
+    const match = opts.find(o => o.value && o.value.toLowerCase().includes(needle))
+               || opts.find(o => o.value && needle.includes(o.value.split(' ')[0].toLowerCase()));
+    if (match) {
+      aeSelect.value = match.value;
+      console.log('AE mode: fuzzy matched "' + aeName + '" → "' + match.value + '"');
+    }
+  }
+  if (aeSelect.value && aeSelect.value !== '') {
+    aeSelect.disabled = true;
+    aeSelect.style.opacity = '1';
+    aeSelect.style.fontWeight = '700';
+  }
   
   // 4. NOW render cards (aeSelect.value is already set)
   renderReviewCards();
@@ -1806,6 +1820,7 @@ if (aeParam) {
   // Auto-pull reviews from sync after 1s (let page render first)
   setTimeout(function() { pullReviews(); }, 1000);
 }
+
 </script>
 </body>
 </html>

@@ -1454,48 +1454,6 @@ function importAllState(event) {
   reader.readAsText(file);
 }
 
-// ── Google Sheets Sync ─────────────────────────────────────────────
-const SYNC_URL_KEY = 'semea_sync_url';
-
-function getSyncUrl() {
-  return localStorage.getItem(SYNC_URL_KEY) || '';
-}
-
-function setSyncUrl() {
-  const current = getSyncUrl();
-  const url = prompt(
-    '🔗 Paste your Google Apps Script Web App URL:\n\n' +
-    '(See setup instructions in the dashboard)',
-    current
-  );
-  if (url === null) return;
-  if (url && !url.startsWith('https://script.google.com/')) {
-    alert('❌ Invalid URL. It should start with https://script.google.com/');
-    return;
-  }
-  localStorage.setItem(SYNC_URL_KEY, url);
-  if (url) {
-    alert('✅ Sync configured! Reviews will now sync automatically.');
-    pullReviews();
-  } else {
-    alert('Sync disabled.');
-  }
-  // sync removed
-}
-
-function updateSyncStatus() {
-  const el = document.getElementById('syncStatus');
-  if (!el) return;
-  const url = getSyncUrl();
-  if (url) {
-    el.innerHTML = '🟢 Sync active';
-    el.style.color = 'var(--green)';
-  } else {
-    el.innerHTML = '⚪ Sync off — <a href="#" onclick="event.preventDefault();setSyncUrl()" style="color:var(--accent)">Configure</a>';
-    el.style.color = 'var(--muted)';
-  }
-}
-
 // ── Google Sheets Sync (via iframe + postMessage) ─────────────────
 // Works with "Anyone within Chainalysis" Apps Script deployment.
 // Uses a hidden iframe that inherits the user's Google session.

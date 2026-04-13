@@ -1,57 +1,63 @@
 <!DOCTYPE html>
 <html>
-<head><title>Sync Debug v2</title></head>
+<head><title>Sync Test v3</title></head>
 <body style="font-family:monospace;padding:20px;background:#111;color:#eee">
-<h2>🔧 Sync Debug v2</h2>
-<div id="log" style="white-space:pre-wrap;line-height:1.8"></div>
-<hr style="margin:20px 0;border-color:#333">
-<h3>iframe 1 (GET pull):</h3>
-<iframe id="if1" style="width:100%;height:150px;border:1px solid #444;background:#fff"></iframe>
-<h3>iframe 2 (direct URL - no params):</h3>
-<iframe id="if2" style="width:100%;height:150px;border:1px solid #444;background:#fff"></iframe>
+<h2>🔧 Sync Test — Click each button</h2>
+<div id="log" style="white-space:pre-wrap;line-height:2;margin:20px 0"></div>
+
+<button onclick="testImage()" style="padding:12px 24px;font-size:16px;margin:8px;cursor:pointer">1️⃣ Test Image() GET</button>
+<button onclick="testFetch()" style="padding:12px 24px;font-size:16px;margin:8px;cursor:pointer">2️⃣ Test fetch() GET</button>
+<button onclick="testFetchNoCors()" style="padding:12px 24px;font-size:16px;margin:8px;cursor:pointer">3️⃣ Test fetch() no-cors</button>
+<button onclick="testNewTab()" style="padding:12px 24px;font-size:16px;margin:8px;cursor:pointer">4️⃣ Open in new tab</button>
+<button onclick="testScript()" style="padding:12px 24px;font-size:16px;margin:8px;cursor:pointer">5️⃣ Test script tag</button>
 
 <script>
-var SYNC_URL = 'https://script.google.com/a/macros/chainalysis.com/s/AKfycbyD97uyY-tE_TTikXNp7XvPy16MnB1AZGvgA2Vk7ZCBOTy_-rNsCtgQT9xFq2MIcWEtzA/exec';
+var URL = 'https://script.google.com/a/macros/chainalysis.com/s/AKfycbyD97uyY-tE_TTikXNp7XvPy16MnB1AZGvgA2Vk7ZCBOTy_-rNsCtgQT9xFq2MIcWEtzA/exec';
+var TEST_PARAMS = '?action=push&ae_name=BrowserTest&deal_id=browser_test_1&account=BrowserTestAcct&opportunity=BrowserTestOpp&status=On%20Track&next_step=test&blocker=&revised_acv=&revised_close=&lost_reason=&timestamp=' + encodeURIComponent(new Date().toISOString()) + '&quarter=Q1-2027';
 
 function log(msg) {
   document.getElementById('log').textContent += new Date().toLocaleTimeString() + ' | ' + msg + '\n';
 }
 
-window.addEventListener('message', function(event) {
-  log('📩 MESSAGE: ' + JSON.stringify(event.data).substring(0, 300));
-});
+function testImage() {
+  log('🖼️ Image() GET...');
+  var img = new Image();
+  img.onload = function() { log('  ✅ Image onload fired'); };
+  img.onerror = function() { log('  ⚠️ Image onerror fired (expected — Apps Script returns HTML not image)'); };
+  img.src = URL + TEST_PARAMS + '&t=' + Date.now();
+  setTimeout(function() { log('  ⏰ 5s timeout — check Google Sheet for "BrowserTest"'); }, 5000);
+}
 
-// Test 1: iframe with params
-log('TEST 1: Loading iframe with pull params...');
-document.getElementById('if1').src = SYNC_URL + '?action=pull&origin=' + encodeURIComponent(window.location.origin);
+function testFetch() {
+  log('📡 fetch() GET (cors)...');
+  fetch(URL + TEST_PARAMS + '&t=' + Date.now())
+  .then(function(r) { log('  ✅ fetch response: ' + r.status + ' ' + r.type); return r.text(); })
+  .then(function(t) { log('  Body: ' + t.substring(0,100)); })
+  .catch(function(e) { log('  ❌ fetch error: ' + e.message); });
+}
 
-// Test 2: iframe with NO params (simplest possible)
-log('TEST 2: Loading iframe with bare URL...');
-document.getElementById('if2').src = SYNC_URL;
+function testFetchNoCors() {
+  log('📡 fetch() GET (no-cors)...');
+  fetch(URL + TEST_PARAMS + '&t=' + Date.now(), {mode:'no-cors'})
+  .then(function(r) { log('  ✅ fetch response: ' + r.status + ' type=' + r.type); })
+  .catch(function(e) { log('  ❌ fetch error: ' + e.message); });
+}
 
-// Test 3: Try window.open as popup
-setTimeout(function() {
-  log('\nTEST 3: Opening Apps Script URL directly...');
-  log('Click this link to test in a new tab:');
-  var a = document.createElement('a');
-  a.href = SYNC_URL + '?action=pull&origin=test';
-  a.target = '_blank';
-  a.textContent = '🔗 Open Apps Script URL in new tab';
-  a.style.cssText = 'color:#6366f1;font-size:16px;display:block;margin:10px 0';
-  document.getElementById('log').appendChild(a);
-}, 1000);
+function testNewTab() {
+  log('🪟 Opening in new tab...');
+  window.open(URL + TEST_PARAMS + '&t=' + Date.now(), '_blank');
+  log('  Check the new tab — does it show JSON or an error?');
+}
 
-// Check iframe load events
-document.getElementById('if1').onload = function() { log('✅ iframe 1 loaded (onload fired)'); };
-document.getElementById('if1').onerror = function() { log('❌ iframe 1 error'); };
-document.getElementById('if2').onload = function() { log('✅ iframe 2 loaded (onload fired)'); };
-document.getElementById('if2').onerror = function() { log('❌ iframe 2 error'); };
-
-setTimeout(function() {
-  log('\n⏰ 20s timeout reached');
-  log('If iframes are still blank: Google blocks embedding Apps Script in iframes from GitHub Pages.');
-  log('Solution: use a different sync approach (direct link or popup window).');
-}, 20000);
+function testScript() {
+  log('📜 Script tag...');
+  var s = document.createElement('script');
+  s.src = URL + TEST_PARAMS + '&t=' + Date.now();
+  s.onload = function() { log('  ✅ Script loaded'); };
+  s.onerror = function() { log('  ❌ Script error'); };
+  document.body.appendChild(s);
+  setTimeout(function() { log('  ⏰ 5s timeout — check Google Sheet'); }, 5000);
+}
 </script>
 </body>
 </html>

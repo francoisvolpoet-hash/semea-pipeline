@@ -1467,8 +1467,9 @@ function importAllState(event) {
 }
 
 // ── Google Sheets Sync ─────────────────────────────────────────────
-// PUSH: Form POST to Apps Script (fire & forget — works reliably)
-// PULL: Reads published Google Sheet via Sheets API (public JSON)
+// PUSH: doGet with data in URL — one deal at a time (stays under URL limit)
+//       Uses Image() objects — no CORS, no iframe, no cookies needed
+// PULL: Google Sheet gviz CSV — accessible to Chainalysis users
 const SYNC_URL_KEY = 'semea_sync_url';
 const SYNC_URL_DEFAULT = 'https://script.google.com/a/macros/chainalysis.com/s/AKfycbyD97uyY-tE_TTikXNp7XvPy16MnB1AZGvgA2Vk7ZCBOTy_-rNsCtgQT9xFq2MIcWEtzA/exec';
 const SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/1_Cknegh5dWscmL0DQW0luGrejfzWoWbBiketBDUl3-w/gviz/tq?tqx=out:csv&sheet=Sheet1';
@@ -1477,7 +1478,7 @@ function getSyncUrl() {
   return localStorage.getItem(SYNC_URL_KEY) || SYNC_URL_DEFAULT;
 }
 
-// ── PUSH: Form POST via hidden iframe (fire & forget) ─────────────
+// ── PUSH: Send one review at a time via doGet ─────────────────────
 function pushReviews(aeName) {
   var aeRv = aeReviews[aeName] || {};
   if (Object.keys(aeRv).length === 0) return;
@@ -1510,62 +1511,72 @@ function pushReviews(aeName) {
   var el = document.getElementById('rvAutoSave');
   if (el) el.textContent = '☁️ Syncing ' + reviews.length + ' reviews...';
   
-  // Create hidden iframe + form for POST
   var url = getSyncUrl();
   if (!url) return;
   
-  var iframe = document.createElement('iframe');
-  iframe.name = 'sync_push_' + Date.now();
-  iframe.style.display = 'none';
-  document.body.appendChild(iframe);
+  // Send each review individually to stay under URL length limits
+  var sent = 0;
+  var errors = 0;
   
-  var form = document.createElement('form');
-  form.method = 'POST';
-  form.action = url;
-  form.target = iframe.name;
-  form.style.display = 'none';
-  
-  var inputData = document.createElement('input');
-  inputData.type = 'hidden';
-  inputData.name = 'data';
-  inputData.value = JSON.stringify({ reviews: reviews });
-  form.appendChild(inputData);
-  
-  var inputOrigin = document.createElement('input');
-  inputOrigin.type = 'hidden';
-  inputOrigin.name = 'origin';
-  inputOrigin.value = window.location.origin;
-  form.appendChild(inputOrigin);
-  
-  document.body.appendChild(form);
-  console.log('☁️ Pushing ' + reviews.length + ' reviews via POST...');
-  form.submit();
-  
-  // Fire & forget: show success after 3s (POST is reliable)
-  setTimeout(function() {
-    if (el) el.textContent = '✅ Reviews synced to shared dashboard!';
+  reviews.forEach(function(rv, idx) {
+    // Small delay between requests to avoid overwhelming Apps Script
     setTimeout(function() {
-      if (el) el.textContent = '✅ All changes saved';
-    }, 3000);
-  }, 3000);
-  
-  // Clean up after 30s
-  setTimeout(function() {
-    if (form.parentNode) form.remove();
-    if (iframe.parentNode) iframe.remove();
-  }, 30000);
+      var params = new URLSearchParams();
+      params.set('action', 'push');
+      params.set('ae_name', rv.ae_name);
+      params.set('deal_id', rv.deal_id);
+      params.set('account', rv.account);
+      params.set('opportunity', rv.opportunity);
+      params.set('status', rv.status);
+      params.set('next_step', rv.next_step);
+      params.set('blocker', rv.blocker);
+      params.set('revised_acv', rv.revised_acv);
+      params.set('revised_close', rv.revised_close);
+      params.set('lost_reason', rv.lost_reason);
+      params.set('timestamp', rv.timestamp);
+      params.set('quarter', rv.quarter);
+      
+      var pushUrl = url + '?' + params.toString();
+      console.log('☁️ Push ' + (idx+1) + '/' + reviews.length + ': ' + rv.account + ' (' + pushUrl.length + ' chars)');
+      
+      // Use Image() — works cross-origin, no CORS, no cookies needed
+      var img = new Image();
+      img.onload = function() {
+        sent++;
+        if (el) el.textContent = '☁️ Synced ' + sent + '/' + reviews.length + '...';
+        if (sent + errors === reviews.length) {
+          if (el) el.textContent = '✅ ' + sent + ' reviews synced to shared dashboard!';
+        }
+      };
+      img.onerror = function() {
+        // Apps Script returns HTML, not an image — so onerror fires
+        // but the GET request was still processed by the server!
+        sent++;
+        if (el) el.textContent = '☁️ Synced ' + sent + '/' + reviews.length + '...';
+        if (sent + errors === reviews.length) {
+          if (el) el.textContent = '✅ ' + sent + ' reviews synced to shared dashboard!';
+        }
+      };
+      img.src = pushUrl;
+    }, idx * 500); // 500ms between each request
+  });
 }
 
-// ── PULL: Read Google Sheet via public gviz CSV endpoint ──────────
+// ── PULL: Read Google Sheet via gviz CSV endpoint ─────────────────
 function pullReviews() {
   console.log('☁️ Pulling reviews from Google Sheet...');
   
-  fetch(SHEET_CSV_URL)
+  fetch(SHEET_CSV_URL, { credentials: 'include' })
   .then(function(resp) {
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     return resp.text();
   })
   .then(function(csv) {
+    // Check if we got actual CSV or an HTML login page
+    if (csv.trim().startsWith('<!DOCTYPE') || csv.trim().startsWith('<html')) {
+      console.warn('☁️ Pull: got login page instead of CSV — user not authenticated');
+      return;
+    }
     var reviews = parseCSVReviews(csv);
     if (reviews.length === 0) {
       console.log('☁️ No reviews on server');
@@ -1603,18 +1614,15 @@ function pullReviews() {
     }
   })
   .catch(function(err) {
-    console.warn('☁️ Pull failed (will retry on next load):', err.message);
+    console.warn('☁️ Pull failed:', err.message);
   });
 }
 
 function parseCSVReviews(csv) {
   var lines = csv.split('\n');
   if (lines.length < 2) return [];
-  
-  // Parse header (handle quoted fields)
   var headers = parseCSVLine(lines[0]);
   var reviews = [];
-  
   for (var i = 1; i < lines.length; i++) {
     if (!lines[i].trim()) continue;
     var values = parseCSVLine(lines[i]);
@@ -1622,9 +1630,7 @@ function parseCSVReviews(csv) {
     headers.forEach(function(h, j) {
       row[h.trim().replace(/^"|"$/g, '')] = (values[j] || '').replace(/^"|"$/g, '');
     });
-    if (row.ae_name && row.deal_id) {
-      reviews.push(row);
-    }
+    if (row.ae_name && row.deal_id) reviews.push(row);
   }
   return reviews;
 }

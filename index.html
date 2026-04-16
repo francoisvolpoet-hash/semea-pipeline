@@ -994,8 +994,9 @@ let aeReviews = loadReviews();
 let _currentReviewDeals = []; // Global ref for event delegation
 
 function getReviewDeals(aeName) {
-  const fq = getCurrentFQ();
-  return getDeals().filter(d => d.Opportunity_Owner === aeName && d.Fiscal_Period === fq);
+  // Show all deals for this AE across all quarters
+  // (was filtering by getCurrentFQ() but that depends on browser date which may not match fiscal year data)
+  return getDeals().filter(d => d.Opportunity_Owner === aeName);
 }
 
 function setView(view) {

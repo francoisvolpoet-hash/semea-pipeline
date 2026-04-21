@@ -206,8 +206,8 @@ html.ae-mode .review-container { display: block !important }
       <div class="date" id="dataDate">Data as of Mar 25, 2026 10:09 AM • SEMEA-MED</div>
     </div>
     <div style="display:flex;gap:8px;">
-      <button class="export-btn" onclick="document.getElementById('fileImport').click()">📂 Importer Excel</button>
-      <input type="file" id="fileImport" accept=".xlsx,.xls" style="display:none" onchange="importExcel(event)">
+      <button class="export-btn" onclick="document.getElementById('fileImport').click()">📂 Importer Excel/CSV</button>
+      <input type="file" id="fileImport" accept=".xlsx,.xls,.csv" style="display:none" onchange="importExcel(event)">
       <button class="export-btn" onclick="exportCSV()">📥 Export CSV</button>
       <button class="export-btn" onclick="exportUpdates()">📋 Export Updates</button>
       <button class="export-btn" onclick="exportAllState()" style="background:var(--green)">💾 Backup Data</button>
@@ -781,22 +781,80 @@ function saveUpdate(i) {
   render();
 }
 
-// ── Import Excel ──────────────────────────────────────────────────
+// ── Import Excel / CSV ────────────────────────────────────────────
+function showImportDebug(msg, isError) {
+  var el = document.getElementById('importDebug');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'importDebug';
+    el.style.cssText = 'position:fixed;bottom:0;left:0;right:0;max-height:40vh;overflow-y:auto;background:#1a1d27;border-top:2px solid ' + (isError ? '#ef4444' : '#6366f1') + ';color:#e4e4e7;padding:12px 20px;z-index:99999;font-family:monospace;font-size:12px;white-space:pre-wrap';
+    var closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕ Fermer';
+    closeBtn.style.cssText = 'position:absolute;top:8px;right:12px;background:#2a2d3a;color:#e4e4e7;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px';
+    closeBtn.onclick = function() { el.remove(); };
+    el.appendChild(closeBtn);
+    document.body.appendChild(el);
+  }
+  if (isError) el.style.borderColor = '#ef4444';
+  el.innerHTML += '\n' + (isError ? '❌ ' : '✅ ') + msg;
+  el.scrollTop = el.scrollHeight;
+  console.log('[Import] ' + msg);
+}
+
 function importExcel(event) {
-  const file=event.target.files[0];
-  if(!file) return;
-  const reader=new FileReader();
-  reader.onload=function(e) {
+  var file = event.target.files[0];
+  if (!file) return;
+
+  // Remove any previous debug panel
+  var oldDebug = document.getElementById('importDebug');
+  if (oldDebug) oldDebug.remove();
+
+  showImportDebug('📂 Fichier: "' + file.name + '" (' + (file.size/1024).toFixed(0) + ' KB)');
+
+  var reader = new FileReader();
+  reader.onerror = function() {
+    showImportDebug('FileReader error: ' + reader.error, true);
+  };
+  reader.onload = function(e) {
     try {
-      const data=new Uint8Array(e.target.result);
-      const wb=XLSX.read(data,{type:'array'});
-      const ws=wb.Sheets[wb.SheetNames[0]];
-      const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
-      // Clean header text: remove arrows, extra spaces, lowercase
-      function cleanHdr(s) { return String(s||'').toLowerCase().replace(/[↑↓→←▲▼►◄\u2191\u2193\u2190\u2192]/g,'').replace(/_/g,' ').replace(/\s+/g,' ').trim(); }
+      showImportDebug('📖 Fichier lu, parsing en cours...');
+
+      // Check if XLSX library is available
+      if (typeof XLSX === 'undefined') {
+        showImportDebug('La librairie XLSX.js n\'est pas chargée ! Vérifiez votre connexion internet.', true);
+        alert('❌ XLSX.js non chargé. Rechargez la page et réessayez.');
+        event.target.value = '';
+        return;
+      }
+
+      var data = new Uint8Array(e.target.result);
+      showImportDebug('📊 XLSX.read en cours (' + data.length + ' bytes)...');
+
+      var wb = XLSX.read(data, {type: 'array'});
+      showImportDebug('📋 Classeur lu: ' + wb.SheetNames.length + ' feuille(s) → "' + wb.SheetNames[0] + '"');
+
+      var ws = wb.Sheets[wb.SheetNames[0]];
+      var rows = XLSX.utils.sheet_to_json(ws, {header: 1, defval: ''});
+      showImportDebug('📝 ' + rows.length + ' lignes extraites, ' + (rows[0] ? rows[0].length : 0) + ' colonnes');
+
+      if (rows.length === 0) {
+        showImportDebug('Le fichier est vide !', true);
+        alert('⚠️ Le fichier "' + file.name + '" est vide.');
+        event.target.value = '';
+        return;
+      }
+
+      // Clean header text: remove arrows, underscores, extra spaces, lowercase
+      function cleanHdr(s) {
+        return String(s || '').toLowerCase()
+          .replace(/[↑↓→←▲▼►◄\u2191\u2193\u2190\u2192]/g, '')
+          .replace(/_/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+      }
 
       // Map keywords to field names (uses includes for fuzzy matching)
-      const COL_RULES = [
+      var COL_RULES = [
         ['fiscal period', 'Fiscal_Period'],
         ['forecast category', 'Forecast_Category'],
         ['account name', 'Account_Name'],
@@ -833,85 +891,175 @@ function importExcel(event) {
         ['last modified date', 'Last_Modified_Date'],
       ];
 
-      // Robust header detection: find the row with the MOST matching column keywords (min 5)
-      let headerIdx=-1;
-      let bestMatchCount=0;
-      for(let i=0;i<Math.min(rows.length,30);i++){
-        let matchCount=0;
-        const usedCheck=new Set();
-        rows[i].forEach(cell=>{
-          const clean=cleanHdr(cell);
-          if(!clean) return;
-          for(const [kw,field] of COL_RULES){
-            if(!usedCheck.has(field) && clean.includes(kw)){usedCheck.add(field);matchCount++;break;}
-          }
-        });
-        if(matchCount>bestMatchCount){bestMatchCount=matchCount;headerIdx=i;}
-      }
-      if(bestMatchCount<5) headerIdx=-1; // safety: need at least 5 recognized columns
-
-      const hdrMap={};
-      const usedCols = new Set();
-      if(headerIdx>=0) {
-        rows[headerIdx].forEach((cell,ci) => {
-          const clean = cleanHdr(cell);
-          if(!clean) return;
-          for(const [kw, field] of COL_RULES) {
-            if(!usedCols.has(field) && clean.includes(kw)) {
-              hdrMap[field] = ci;
-              usedCols.add(field);
+      // Robust header detection: scan first 50 rows for best match
+      var headerIdx = -1;
+      var bestMatchCount = 0;
+      var scanLimit = Math.min(rows.length, 50);
+      for (var i = 0; i < scanLimit; i++) {
+        var matchCount = 0;
+        var usedCheck = new Set();
+        if (!Array.isArray(rows[i])) continue;
+        rows[i].forEach(function(cell) {
+          var clean = cleanHdr(cell);
+          if (!clean) return;
+          for (var j = 0; j < COL_RULES.length; j++) {
+            var kw = COL_RULES[j][0], field = COL_RULES[j][1];
+            if (!usedCheck.has(field) && clean.includes(kw)) {
+              usedCheck.add(field);
+              matchCount++;
               break;
             }
           }
         });
+        if (matchCount > bestMatchCount) {
+          bestMatchCount = matchCount;
+          headerIdx = i;
+        }
       }
 
-      // Find the skip column (between Forecast_Category and Account_Name)
-      const skipColIdx = (hdrMap['Forecast_Category'] !== undefined && hdrMap['Account_Name'] !== undefined)
+      showImportDebug('🔍 Header détecté: ligne ' + headerIdx + ' avec ' + bestMatchCount + ' colonnes reconnues');
+
+      // Show what the header row looks like
+      if (headerIdx >= 0 && rows[headerIdx]) {
+        var sampleHeaders = rows[headerIdx].filter(function(c) { return c; }).slice(0, 6);
+        showImportDebug('   Headers: ' + sampleHeaders.map(function(h) { return '"' + String(h).substring(0, 25) + '"'; }).join(', '));
+      }
+
+      if (bestMatchCount < 3) {
+        // Show debug info to help diagnose
+        showImportDebug('Seulement ' + bestMatchCount + ' colonnes reconnues (minimum: 3). Format non reconnu.', true);
+        showImportDebug('Colonnes attendues: Opportunity Name, Account Name, Stage, Close Date, etc.');
+        if (rows.length > 0) {
+          showImportDebug('Première ligne du fichier: ' + rows[0].slice(0, 5).join(' | '));
+        }
+        alert('⚠️ Format non reconnu dans "' + file.name + '"\n\n' + bestMatchCount + ' colonnes reconnues (minimum: 3).\n\nLe fichier doit contenir des colonnes comme:\nOpportunity Name, Account Name, Stage, Close Date...\n\nVoir le panneau de debug en bas de page.');
+        event.target.value = '';
+        return;
+      }
+
+      // Build column mapping
+      var hdrMap = {};
+      var usedCols = new Set();
+      rows[headerIdx].forEach(function(cell, ci) {
+        var clean = cleanHdr(cell);
+        if (!clean) return;
+        for (var j = 0; j < COL_RULES.length; j++) {
+          var kw = COL_RULES[j][0], field = COL_RULES[j][1];
+          if (!usedCols.has(field) && clean.includes(kw)) {
+            hdrMap[field] = ci;
+            usedCols.add(field);
+            break;
+          }
+        }
+      });
+
+      var mappedFields = Object.keys(hdrMap);
+      showImportDebug('📋 ' + mappedFields.length + ' champs mappés: ' + mappedFields.slice(0, 8).join(', ') + (mappedFields.length > 8 ? '...' : ''));
+
+      // Check critical fields
+      var criticalMissing = [];
+      if (!hdrMap.hasOwnProperty('Opportunity_Name')) criticalMissing.push('Opportunity Name');
+      if (!hdrMap.hasOwnProperty('Account_Name')) criticalMissing.push('Account Name');
+      if (criticalMissing.length > 0) {
+        showImportDebug('Colonnes critiques manquantes: ' + criticalMissing.join(', '), true);
+        alert('⚠️ Colonnes critiques manquantes: ' + criticalMissing.join(', '));
+        event.target.value = '';
+        return;
+      }
+
+      // Detect if this is a grouped report (with subtotals) or flat data
+      var skipColIdx = (hdrMap['Forecast_Category'] !== undefined && hdrMap['Account_Name'] !== undefined)
         ? hdrMap['Forecast_Category'] + 1
         : -1;
 
-      const newDeals=[];let curFiscal=null,curForecast=null;
-      for(let i=headerIdx+1;i<rows.length;i++){
-        const r=rows[i];
-        const fp = hdrMap['Fiscal_Period'] !== undefined ? r[hdrMap['Fiscal_Period']] : '';
-        if(fp&&String(fp).startsWith('Q')){curFiscal=String(fp);curForecast=null;}
-        const fc = hdrMap['Forecast_Category'] !== undefined ? r[hdrMap['Forecast_Category']] : '';
-        if(fc&&fc!=='Subtotal'&&String(fc).trim())curForecast=String(fc).trim();
-        // Skip subtotal/count rows
-        if(skipColIdx >= 0) {
-          const sv = r[skipColIdx];
-          if(sv==='Sum'||sv==='Grand Total'||sv==='Count') continue;
+      // Parse deals
+      var newDeals = [];
+      var curFiscal = null, curForecast = null;
+      var skippedEmpty = 0, skippedSubtotal = 0;
+
+      for (var i = headerIdx + 1; i < rows.length; i++) {
+        var r = rows[i];
+        if (!r || !Array.isArray(r)) continue;
+
+        var fp = hdrMap['Fiscal_Period'] !== undefined ? r[hdrMap['Fiscal_Period']] : '';
+        if (fp && String(fp).startsWith('Q')) {
+          curFiscal = String(fp);
+          curForecast = null;
         }
-        // Also skip if any cell in the row says Sum/Grand Total (fallback)
-        const rowStr = r.join('|');
-        if(rowStr.includes('Grand Total')) continue;
-        const oppName = hdrMap['Opportunity_Name'] !== undefined ? r[hdrMap['Opportunity_Name']] : '';
-        if(!oppName) continue;
-        const rec={};
-        Object.entries(hdrMap).forEach(([f,ci])=>{rec[f]=r[ci]!==undefined?r[ci]:'';});
-        if(!rec.Fiscal_Period||!String(rec.Fiscal_Period).startsWith('Q')) rec.Fiscal_Period=curFiscal||'';
-        if(!rec.Forecast_Category||!String(rec.Forecast_Category).trim()||rec.Forecast_Category==='Subtotal') rec.Forecast_Category=curForecast||'';
-        ['NACV_converted','Amount_converted','New_ACV_converted','Total_Service_converted','Renewal_ACV_converted','Renewal_Baseline_converted','Contraction_Forecast_converted'].forEach(f=>{rec[f]=parseFloat(rec[f])||0;});
-        Object.keys(rec).forEach(k=>{if(typeof rec[k]==='string') rec[k]=rec[k].trim();});
-        rec.id=rec.Opportunity_Name+'|'+rec.Account_Name;
+        var fc = hdrMap['Forecast_Category'] !== undefined ? r[hdrMap['Forecast_Category']] : '';
+        if (fc && fc !== 'Subtotal' && String(fc).trim()) curForecast = String(fc).trim();
+
+        // Skip subtotal/count rows
+        if (skipColIdx >= 0 && r[skipColIdx]) {
+          var sv = String(r[skipColIdx]);
+          if (sv === 'Sum' || sv === 'Grand Total' || sv === 'Count') { skippedSubtotal++; continue; }
+        }
+        // Grand Total fallback
+        var rowStr = r.join('|');
+        if (rowStr.includes('Grand Total')) { skippedSubtotal++; continue; }
+
+        var oppName = hdrMap['Opportunity_Name'] !== undefined ? r[hdrMap['Opportunity_Name']] : '';
+        if (!oppName) { skippedEmpty++; continue; }
+
+        var rec = {};
+        Object.keys(hdrMap).forEach(function(f) {
+          var ci = hdrMap[f];
+          rec[f] = (ci < r.length && r[ci] !== undefined) ? r[ci] : '';
+        });
+
+        // Propagate fiscal period and forecast from grouped rows
+        if (!rec.Fiscal_Period || !String(rec.Fiscal_Period).startsWith('Q')) rec.Fiscal_Period = curFiscal || '';
+        if (!rec.Forecast_Category || !String(rec.Forecast_Category).trim() || rec.Forecast_Category === 'Subtotal') rec.Forecast_Category = curForecast || '';
+
+        // Parse numeric fields
+        ['NACV_converted','Amount_converted','New_ACV_converted','Total_Service_converted',
+         'Renewal_ACV_converted','Renewal_Baseline_converted','Contraction_Forecast_converted'].forEach(function(f) {
+          rec[f] = parseFloat(rec[f]) || 0;
+        });
+
+        // Trim strings
+        Object.keys(rec).forEach(function(k) {
+          if (typeof rec[k] === 'string') rec[k] = rec[k].trim();
+        });
+
+        rec.id = String(rec.Opportunity_Name) + '|' + String(rec.Account_Name);
         newDeals.push(rec);
       }
-      newDeals.sort((a,b)=>(b.NACV_converted||0)-(a.NACV_converted||0));
-      const oldIds=new Set(RAW_DEALS.map(d=>d.id));
-      const newIds=new Set(newDeals.map(d=>d.id));
-      const added=newDeals.filter(d=>!oldIds.has(d.id)).length;
-      const removed=RAW_DEALS.filter(d=>!newIds.has(d.id)).length;
-      const updated=newDeals.filter(d=>oldIds.has(d.id)).length;
-      const preserved=Object.keys(state).filter(id=>newIds.has(id)).length;
-      if(newDeals.length===0){
-        alert('⚠️ Aucun deal trouvé dans le fichier "'+file.name+'". Vérifiez que le fichier contient des colonnes reconnues (Opportunity Name, Account Name, etc.).');
-        event.target.value='';
+
+      showImportDebug('🔢 Parsing terminé: ' + newDeals.length + ' deals trouvés (ignorés: ' + skippedEmpty + ' vides, ' + skippedSubtotal + ' subtotaux)');
+
+      newDeals.sort(function(a, b) { return (b.NACV_converted || 0) - (a.NACV_converted || 0); });
+
+      if (newDeals.length === 0) {
+        showImportDebug('Aucun deal trouvé ! Le fichier a des lignes mais aucune avec un "Opportunity Name".', true);
+        showImportDebug('Lignes après header: ' + (rows.length - headerIdx - 1) + ', vides ignorées: ' + skippedEmpty);
+        // Show a sample of what data looks like
+        if (rows.length > headerIdx + 1) {
+          var sample = rows[headerIdx + 1];
+          showImportDebug('Exemple ligne ' + (headerIdx + 1) + ': ' + (sample || []).slice(0, 6).join(' | '));
+        }
+        alert('⚠️ 0 deals trouvés dans "' + file.name + '".\nVoir le panneau de debug en bas de page.');
+        event.target.value = '';
         return;
       }
-      RAW_DEALS=newDeals;
-      // Clear stale overrides from state so new Excel data takes precedence
-      // Keep gutt, updates, but remove close_date/stage/forecast
+
+      // Show sample deal
+      if (newDeals[0]) {
+        showImportDebug('   Premier deal: "' + (newDeals[0].Opportunity_Name || '').substring(0, 50) + '" — ' + (newDeals[0].Account_Name || '') + ' — NACV: ' + (newDeals[0].NACV_converted || 0));
+      }
+
+      var oldIds = new Set(RAW_DEALS.map(function(d) { return d.id; }));
+      var newIds = new Set(newDeals.map(function(d) { return d.id; }));
+      var added = newDeals.filter(function(d) { return !oldIds.has(d.id); }).length;
+      var removed = RAW_DEALS.filter(function(d) { return !newIds.has(d.id); }).length;
+      var updated = newDeals.filter(function(d) { return oldIds.has(d.id); }).length;
+      var preserved = Object.keys(state).filter(function(id) { return newIds.has(id); }).length;
+
+      showImportDebug('🔄 Remplacement: ' + added + ' nouveaux, ' + updated + ' mis à jour, ' + removed + ' retirés, ' + preserved + ' notes préservées');
+
+      RAW_DEALS = newDeals;
+
+      // Clear stale overrides from state
       Object.keys(state).forEach(function(id) {
         if (state[id]) {
           delete state[id].close_date;
@@ -920,28 +1068,58 @@ function importExcel(event) {
         }
       });
       saveState(state);
-      // Extract data date from filename (pattern: YYYY-MM-DD-HH-MM-SS)
-      const dateMatch = file.name.match(/(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})/);
+
+      // Extract data date from filename
+      var dateMatch = file.name.match(/(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})/);
       if (dateMatch) {
-        const [_, yr, mo, dy, hh, mm, ss] = dateMatch;
-        const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-        const monthName = months[parseInt(mo)-1] || mo;
-        const ampm = parseInt(hh) >= 12 ? 'PM' : 'AM';
-        const h12 = parseInt(hh) % 12 || 12;
-        const dataDateStr = `Data as of ${monthName} ${parseInt(dy)}, ${yr} ${h12}:${mm} ${ampm}`;
-        document.getElementById('dataDate').textContent = dataDateStr + ' • SEMEA-MED';
+        var yr = dateMatch[1], mo = dateMatch[2], dy = dateMatch[3];
+        var hh = dateMatch[4], mm = dateMatch[5];
+        var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        var monthName = months[parseInt(mo) - 1] || mo;
+        var ampm = parseInt(hh) >= 12 ? 'PM' : 'AM';
+        var h12 = parseInt(hh) % 12 || 12;
+        var dataDateStr = 'Data as of ' + monthName + ' ' + parseInt(dy) + ', ' + yr + ' ' + h12 + ':' + mm + ' ' + ampm;
+        document.getElementById('dataDate').textContent = dataDateStr + ' \u2022 SEMEA-MED';
+        localStorage.setItem('semea_data_date', dataDateStr);
+      } else {
+        // Use current date if no pattern in filename
+        var now = new Date();
+        var dataDateStr = 'Data imported ' + now.toLocaleDateString('fr-FR') + ' ' + now.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
+        document.getElementById('dataDate').textContent = dataDateStr + ' \u2022 SEMEA-MED';
         localStorage.setItem('semea_data_date', dataDateStr);
       }
-      render();
-      const banner=document.createElement('div');
-      banner.className='import-banner';
-      banner.innerHTML=`<div><div class="msg">✅ Import réussi — ${newDeals.length} deals depuis "${file.name}"</div><div class="details">${added} nouveaux · ${updated} mis à jour · ${removed} retirés · ${preserved} notes préservées</div></div><button onclick="this.parentElement.remove()">✕</button>`;
-      document.querySelector('.kpi-row').before(banner);
-    } catch(err) { alert('Erreur import: '+err.message); console.error(err); }
-    event.target.value='';
+
+      showImportDebug('🎨 Rendering dashboard avec ' + RAW_DEALS.length + ' deals...');
+
+      // If in AE review mode, re-render cards instead of main dashboard
+      if (currentView === 'review') {
+        renderReviewCards();
+      } else if (currentView === 'reviewsummary') {
+        renderReviewSummary();
+      } else {
+        render();
+      }
+
+      showImportDebug('✨ Import terminé ! Dashboard mis à jour avec ' + newDeals.length + ' deals.');
+
+      // Show success banner
+      var banner = document.createElement('div');
+      banner.className = 'import-banner';
+      banner.innerHTML = '<div><div class="msg">✅ Import réussi — ' + newDeals.length + ' deals depuis "' + file.name + '"</div><div class="details">' + added + ' nouveaux · ' + updated + ' mis à jour · ' + removed + ' retirés · ' + preserved + ' notes préservées</div></div><button onclick="this.parentElement.remove()">✕</button>';
+      var kpiRow = document.querySelector('.kpi-row');
+      if (kpiRow) kpiRow.before(banner);
+
+    } catch(err) {
+      showImportDebug('ERREUR: ' + err.message, true);
+      showImportDebug('Stack: ' + (err.stack || 'N/A'), true);
+      alert('❌ Erreur import: ' + err.message + '\n\nVoir le panneau de debug en bas de page.');
+      console.error('[Import Error]', err);
+    }
+    event.target.value = '';
   };
   reader.readAsArrayBuffer(file);
 }
+
 
 // ── Export ─────────────────────────────────────────────────────────
 function exportCSV() {

@@ -793,7 +793,7 @@ function importExcel(event) {
       const ws=wb.Sheets[wb.SheetNames[0]];
       const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
       // Clean header text: remove arrows, extra spaces, lowercase
-      function cleanHdr(s) { return String(s||'').toLowerCase().replace(/[↑↓→←▲▼►◄\u2191\u2193\u2190\u2192]/g,'').replace(/\s+/g,' ').trim(); }
+      function cleanHdr(s) { return String(s||'').toLowerCase().replace(/[↑↓→←▲▼►◄\u2191\u2193\u2190\u2192]/g,'').replace(/_/g,' ').replace(/\s+/g,' ').trim(); }
 
       // Map keywords to field names (uses includes for fuzzy matching)
       const COL_RULES = [
@@ -904,6 +904,11 @@ function importExcel(event) {
       const removed=RAW_DEALS.filter(d=>!newIds.has(d.id)).length;
       const updated=newDeals.filter(d=>oldIds.has(d.id)).length;
       const preserved=Object.keys(state).filter(id=>newIds.has(id)).length;
+      if(newDeals.length===0){
+        alert('⚠️ Aucun deal trouvé dans le fichier "'+file.name+'". Vérifiez que le fichier contient des colonnes reconnues (Opportunity Name, Account Name, etc.).');
+        event.target.value='';
+        return;
+      }
       RAW_DEALS=newDeals;
       // Clear stale overrides from state so new Excel data takes precedence
       // Keep gutt, updates, but remove close_date/stage/forecast

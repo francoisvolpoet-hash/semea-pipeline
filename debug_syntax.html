@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Syntax Test</title>
+<style>body{font-family:monospace;background:#111;color:#eee;padding:20px}
+.err{color:#ef4444;font-weight:bold}.ok{color:#22c55e}
+pre{background:#1a1d27;padding:10px;border-radius:6px;overflow:auto;max-height:300px;font-size:12px;color:#f87171;margin:8px 0}</style>
+</head>
+<body>
+<h1>🔍 Syntax Check</h1>
+<div id="log"></div>
+<script>
+var log = document.getElementById('log');
+function msg(t, cls) { var d=document.createElement('div'); d.className=cls||''; d.textContent=t; log.appendChild(d); }
+function pre(t) { var p=document.createElement('pre'); p.textContent=t; log.appendChild(p); }
+
+// Fetch the dashboard page and extract its script
+msg('Fetching dashboard...');
+fetch('index.html').then(r => r.text()).then(html => {
+  // Find the last <script>...</script> block
+  var lastOpen = html.lastIndexOf('<script>');
+  var lastClose = html.lastIndexOf('</script>');
+  if (lastOpen < 0 || lastClose < 0) { msg('Could not find script block', 'err'); return; }
+  var code = html.substring(lastOpen + 8, lastClose);
+  msg('Script extracted: ' + code.length + ' chars, ' + code.split('\n').length + ' lines');
+  
+  // Try to parse it
+  try {
+    new Function(code);
+    msg('✅ No syntax errors!', 'ok');
+  } catch(e) {
+    msg('❌ SYNTAX ERROR: ' + e.message, 'err');
+    pre(e.stack || '');
+    
+    // Binary search for the offending line
+    var lines = code.split('\n');
+    msg('Binary searching ' + lines.length + ' lines...');
+    
+    // Test first half, second half
+    var mid = Math.floor(lines.length / 2);
+    try { new Function(lines.slice(0, mid).join('\n')); msg('First half (1-' + mid + '): OK', 'ok'); }
+    catch(e2) { msg('First half (1-' + mid + '): ' + e2.message, 'err'); }
+    
+    try { new Function(lines.slice(mid).join('\n')); msg('Second half (' + mid + '-' + lines.length + '): OK', 'ok'); }
+    catch(e2) { msg('Second half (' + mid + '-' + lines.length + '): ' + e2.message, 'err'); }
+    
+    // Try progressively larger chunks from the start
+    msg('');
+    msg('Finding exact error location...');
+    var chunkSize = 50;
+    for (var i = 0; i < lines.length; i += chunkSize) {
+      var chunk = lines.slice(0, i + chunkSize).join('\n');
+      try {
+        new Function(chunk);
+      } catch(e3) {
+        msg('Error appears between lines ' + (i+1) + '-' + (i+chunkSize) + ': ' + e3.message, 'err');
+        // Narrow down
+        for (var j = i; j < Math.min(i + chunkSize, lines.length); j++) {
+          var small = lines.slice(0, j + 1).join('\n');
+          try { new Function(small); }
+          catch(e4) {
+            msg('>>> EXACT: Line ' + (j+1) + ': ' + e4.message, 'err');
+            // Show context
+            var ctx = '';
+            for (var k = Math.max(0, j-3); k <= Math.min(lines.length-1, j+3); k++) {
+              ctx += (k === j ? '>>> ' : '    ') + (k+1) + ': ' + lines[k] + '\n';
+            }
+            pre(ctx);
+            return;
+          }
+        }
+        return;
+      }
+    }
+    msg('Could not isolate the error', 'err');
+  }
+}).catch(err => msg('Fetch error: ' + err.message, 'err'));
+</script>
+</body>
+</html>

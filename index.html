@@ -1794,10 +1794,7 @@ function pushReviews(aeName, reviewed, totalDeals) {
           if (el) el.textContent = '✅ ' + sent + ' reviews synced to shared dashboard!';
           // Show confirmation only after all pushes completed
           if (typeof reviewed !== 'undefined') {
-            alert('✅ Review submitted!
-
-' + (reviewed||0) + '/' + (totalDeals||0) + ' deals reviewed.
-Your updates are synced to the shared dashboard.');
+            alert('✅ Review submitted!\n\n' + (reviewed||0) + '/' + (totalDeals||0) + ' deals reviewed.\nYour updates are synced to the shared dashboard.');
           }
         }
       });
